@@ -1,0 +1,497 @@
+title: "scRNAseq CLL data processing - CLL cells, only screen and relapsed samples"
+
+```{r, include=FALSE, eval=TRUE}
+knitr::opts_chunk$set(warning=FALSE,message=FALSE)
+```
+
+```{r,warning=FALSE,message=FALSE}
+library(Seurat)
+library(ggplot2)
+library(cowplot)
+library(dplyr)
+library(tidyr)
+library(SeuratWrappers)
+library(Polychrome)
+library(readxl)
+library(org.Hs.eg.db)
+library(DelayedArray)
+library(ggpubr)
+library(AnnotationHub)
+library(scater)
+library(ggrepel)
+library(scran)
+library(batchelor)
+library(harmony)
+library(RColorBrewer)
+library(DropletUtils)
+library(BiocNeighbors)
+set.seed(19910603)
+library(BiocParallel)
+bpp <- MulticoreParam(12)
+sampleID_annotation <- read_excel("sampleID_annotation.xlsx")
+getPalette = colorRampPalette(brewer.pal(9, "Set1"))
+data_root = "/stornext/Genomics/data/CLL_venetoclax/data_analysis/CLL_analysis/scripts"
+dir.create(file.path(data_root, "figs","RS_fig"))
+```
+
+```{r}
+screen_color = "#4472C4"
+relapsed_color = "#803D38"
+```
+
+
+```{r,fig.width=12,fig.height=10}
+sce = HDF5Array::loadHDF5SummarizedExperiment("data_h5")
+
+sce_cll = sce[,sce$major_celltype == "CLL/B cell"]
+sce_cll = sce_cll[,sce_cll$condition %in% c("Relapsed","Screening")]
+```
+
+
+```{r, normalization of RNA-seq data}
+
+dec <- modelGeneVarByPoisson(sce_cll, 
+    block=sce_cll$sample_id, BPPARAM=bpp)
+hvg <- getTopHVGs(dec, n=3000)
+```
+
+
+```{r}
+sce_corrected <- fastMNN(
+  sce_cll,
+  batch = factor(sce_cll$sample_id),
+  k = 30,
+  d = 40,
+  deferred=FALSE,
+  auto.merge = TRUE,
+  subset.row = hvg,
+  BSPARAM=BiocSingular::RandomParam(deferred = FALSE), 
+     BNPARAM=AnnoyParam(),
+     BPPARAM=bpp)
+reducedDim(sce_cll, 'MNN') <- reducedDim(sce_corrected, 'corrected')
+```
+
+
+
+```{r}
+counts(sce_cll) <- as(counts(sce_cll, withDimnames = FALSE), "dgCMatrix")
+logcounts(sce_cll) <- as(logcounts(sce_cll, withDimnames = FALSE), "dgCMatrix")
+```
+
+
+```{r}
+
+srt <- as.Seurat(sce_cll, counts = "counts", data = "logcounts")
+
+srt[["ADT"]] <- CreateAssayObject(counts = counts( altExp(sce_cll)))
+srt <- NormalizeData(srt, assay = "ADT", normalization.method = "CLR")
+srt <- ScaleData(srt, assay = "ADT")
+```
+
+
+```{r}
+srt <- FindNeighbors(srt, reduction = "MNN", dims = 1:40, nn.eps = 0.1,verbose = F)
+srt <- FindClusters(srt, n.start = 10,verbose = F)
+srt <- RunUMAP(srt, reduction = "MNN", dims = 1:40, min.dist = 0.1,verbose = F)
+```
+
+```{r}
+DimPlot(srt,label = T,reduction="umap")
+ggsave(file.path("figs","RS_fig","UMAP_cll_RS.jpg"),dpi = 300,width = 5.5,height = 5)
+```
+
+```{r,fig.width=12,fig.height=10}
+DimPlot(srt,label = T,reduction="umap",split.by = "condition",ncol=2)
+ggsave(file.path("figs","RS_fig","UMAP_RS.jpg"),dpi = 300,width = 8,height = 4)
+```
+
+
+```{r}
+FeaturePlot(srt,features = c("subsets_Mito_percent","sum","detected"),max.cutoff="q99",reduction="umap")
+```
+
+```{r,fig.height=8,fig.width=6}
+VlnPlot(srt,features = c("subsets_Mito_percent","sum","detected"),pt.size = 0,ncol = 1)
+```
+
+```{r}
+saveRDS(srt,file="data/srt_cll_RS.Rds")
+#srt = readRDS("data/srt_cll_RS.Rds")
+```
+
+
+
+```{r}
+srt.marker = FindAllMarkers(srt,min.diff.pct=0.1,only.pos = T,verbose=F,max.cells.per.ident=2000)
+write.csv(srt.marker,file="data/srt.marker_RS.csv",row.names = FALSE)
+#srt.marker = read.csv(file="data/srt.marker_RS.csv")
+```
+
+```{r}
+top10 <- srt.marker %>% group_by(cluster) %>% top_n(n = 60, wt = -p_val_adj) # %>%  top_n(n = 5, wt = avg_logFC)
+top10 = top10 %>% group_by(gene) %>% top_n(n=1,wt=avg_logFC)
+top10 = top10 %>% group_by(cluster) %>% top_n(n = 30, wt = avg_logFC)
+
+write.csv(top10$gene[top10$cluster==4],row.names = FALSE,quote = FALSE)
+```
+
+
+
+
+
+
+```{r,fig.width=10,fig.height=20}
+#top10 <- srt.marker %>% group_by(cluster) %>% top_n(n = 10, wt = -p_val_adj) %>%  top_n(n = 5, wt = avg_logFC)
+top10 <- srt.marker[srt.marker$p_val_adj<0.001,] %>% group_by(cluster) %>% top_n(n = 30, wt = -p_val_adj) # %>%  top_n(n = 5, wt = avg_logFC)
+top10 = top10 %>% group_by(gene) %>% top_n(n=1,wt=avg_logFC)
+top10 = top10 %>% group_by(cluster) %>% top_n(n = 4, wt = avg_logFC)
+
+DotPlot(srt,features = unique(top10$gene),cluster.idents=F,cols=c(brewer.pal(7,"YlGnBu")[1],brewer.pal(7,"YlGnBu")[7]) )+coord_flip()+labs(x=NULL,y=NULL)
+ggsave(file.path("final_fig","sup_allmarker_dotplot.pdf"),width = 8,height = 15)
+```
+
+
+```{r}
+srt_meta_sel = srt@meta.data[,c("sample_id","condition","seurat_clusters","patient_id")]
+srt_meta_sel %<>% dplyr::group_by(sample_id,patient_id) %>%  dplyr::mutate(cell_n=n()) %>% dplyr::group_by(sample_id,patient_id,condition,seurat_clusters) %>% dplyr::summarise(c_pct=n()/cell_n)
+srt_meta_sel = srt_meta_sel[!duplicated(srt_meta_sel),]
+```
+
+```{r}
+is_outlier <- function(x) {
+  tmp = x[order(x,decreasing = T)]
+  if(max(x)-min(x)<0.1){
+    return(x >10)
+  }else if(tmp[1]-tmp[2]>0.4){
+    return(x>tmp[2])
+  }else{
+    return(x < quantile(x, 0.25) - (1.5 * IQR(x)) | x > quantile(x, 0.8) + (1.5 * IQR(x)) )
+  }
+}
+dat <- srt_meta_sel %>% 
+  group_by(seurat_clusters,condition) %>% 
+  mutate(outlier1 = if_else(is_outlier(c_pct), patient_id, ""))
+dat$condition = factor(dat$condition,levels = c("Screening","Relapsed"))
+```
+
+
+
+
+```{r}
+doublet_cluster = 7
+```
+
+
+
+
+```{r}
+srt$condition = factor(srt$condition,levels =c("Screening","Relapsed"))
+srt_meta_sel = srt@meta.data[,c("condition","seurat_clusters")]
+srt_meta_sel = srt_meta_sel[!(srt_meta_sel$seurat_clusters %in% doublet_cluster),]
+srt_meta_sel %<>% dplyr::group_by(condition) %>%  dplyr::mutate(cell_n=n()) %>% dplyr::group_by(condition,seurat_clusters) %>% dplyr::summarise(c_pct=n()/cell_n)
+srt_meta_sel = srt_meta_sel[!duplicated(srt_meta_sel),]
+
+srt_meta_w <- spread(srt_meta_sel, condition, c_pct)
+srt_meta_w$Rel_pct = srt_meta_w$Relapsed/(srt_meta_w$Screening+srt_meta_w$Relapsed)
+srt_meta_w = srt_meta_w[order(srt_meta_w$Rel_pct),]
+srt_meta_w$seurat_clusters = factor(srt_meta_w$seurat_clusters,levels = srt_meta_w$seurat_clusters)
+
+srt_meta_sel$seurat_clusters = factor(srt_meta_sel$seurat_clusters,levels = srt_meta_w$seurat_clusters)
+```
+
+```{r,fig.width=10,fig.height=10}
+dat_sel = dat[!(dat$seurat_clusters %in% doublet_cluster),]
+dat_sel$seurat_clusters = factor(dat_sel$seurat_clusters,levels = srt_meta_w$seurat_clusters)
+ggplot(data=dat_sel,aes(x=condition,y=c_pct,label=outlier1,group=patient_id))+
+  #geom_boxplot(outlier.color=NA)+
+  geom_line()+
+  #geom_text(vjust = 1)+
+  geom_text_repel(size=3)+
+  geom_point()+
+  facet_wrap(~seurat_clusters,scales="free_y",ncol=4)+
+  labs(y="proportions",x="")+
+  theme_bw()+
+  theme(axis.text.x = element_text(hjust=1,angle=30),panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))
+ggsave(file.path("final_fig","lineplot_proportions_RS.pdf"),width = 6.5,height = 6.5)
+```
+
+```{r}
+ggplot(data = srt_meta_sel,aes(x=seurat_clusters,y=c_pct,fill=condition))+
+  geom_bar(stat="identity")+
+  labs(x="",y="Normalized proportions",fill="")+
+  theme_classic()+
+  scale_fill_manual(values = c("Screening"=screen_color,"Relapsed"=relapsed_color))+
+  theme(legend.position = "none")+
+  facet_wrap(~condition,ncol=1)
+ggsave(file.path("final_fig","abundance_barplot_RS.pdf"),width=6,height=4)
+```
+
+```{r}
+plot(srt_meta_w$Rel_pct)
+```
+
+
+```{r}
+tmp_pct_w = dat[!(dat$seurat_clusters %in% doublet_cluster),] %>% pivot_wider(id_cols = sample_id,names_from=seurat_clusters,values_from=c_pct,values_fill=0)
+tmp_pct_w = as.data.frame(tmp_pct_w)
+rownames(tmp_pct_w) = tmp_pct_w$sample_id
+tmp_pct_w = tmp_pct_w[,-1]
+tmp_pct_w = tmp_pct_w[,as.character( srt_meta_w$seurat_clusters)]
+tmp_pct_w1 = t(scale(t(tmp_pct_w)))
+tmp_pct_w1 = (scale((tmp_pct_w)))
+tmp_pct_w1[tmp_pct_w1>2.5] = 2.5
+tmp_pct_w1[tmp_pct_w1<(-2.5)] = -2.5
+
+pt_anno = unique(dat[,c("sample_id","condition")])
+pt_anno$patient_id = sampleID_annotation$patient_id[match(pt_anno$sample_id,sampleID_annotation$sample_id)]
+pt_anno = as.data.frame(pt_anno)
+rownames(pt_anno) = pt_anno$sample_id
+pt_anno = pt_anno[,-1]
+pt_anno = pt_anno[order(pt_anno$condition),]
+pt_anno = pt_anno[,"condition",drop=FALSE]
+
+annotation_colors = list(
+  condition=c(Screening=screen_color,Relapsed=relapsed_color)
+)
+
+ph_s = pheatmap::pheatmap(tmp_pct_w1[rownames(pt_anno)[pt_anno$condition=="Screening"],],clustering_distance_rows="minkowski")
+ph_r = pheatmap::pheatmap(tmp_pct_w1[rownames(pt_anno)[pt_anno$condition=="Relapsed"],],clustering_distance_rows="minkowski")
+plot_tmp = tmp_pct_w1[c( ph_s$tree_row$labels[ph_s$tree_row$order],  ph_r$tree_row$labels[ph_r$tree_row$order]),]
+
+pheatmap::pheatmap(plot_tmp,gaps_row=7,clustering_distance_rows="minkowski",annotation_row = pt_anno,cluster_cols = F,cluster_rows = F,annotation_colors=annotation_colors,
+                   width = 9,height = 6,labels_row=sampleID_annotation$patient_id[match(rownames(plot_tmp),sampleID_annotation$sample_id)],
+                   filename=file.path("final_fig","abundance_heatmap_RS.pdf"))
+
+pheatmap::pheatmap(tmp_pct_w[c( ph_s$tree_row$labels[ph_s$tree_row$order],  ph_r$tree_row$labels[ph_r$tree_row$order]),],gaps_row=7,clustering_distance_rows="minkowski",annotation_row = pt_anno,cluster_cols = F,cluster_rows = F,
+                   width = 9,height = 6,labels_row=sampleID_annotation$patient_id[match(rownames(tmp_pct_w),sampleID_annotation$sample_id)],
+                   filename=file.path("figs","RS_fig","abundance_heatmap_RS_raw.pdf"))
+
+```
+
+
+```{r}
+srt1 = srt[,!(srt$seurat_clusters %in% doublet_cluster)]
+Idents(srt1) = factor(Idents(srt1),levels =srt_meta_w$seurat_clusters)
+```
+
+## generate umap without doublet
+
+```{r}
+DimPlot(srt1,cols = getPalette( length(unique(Idents(srt1))) ) ,label=T)+guides(x = "none", y = "none")+labs(x = NULL, y = NULL) 
+ggsave(file.path("final_fig","UMAP_cll_RS.jpg"),dpi = 300,width = 5,height = 4.5)
+```
+
+## generate relapse-screen splitted umap without doublet
+
+```{r,fig.width=12,fig.height=10}
+DimPlot(srt1,cols = getPalette( length(unique(Idents(srt1))) ), label = T,reduction="umap",split.by = "condition",ncol=2)+guides(x = "none", y = "none")+labs(x = NULL, y = NULL) 
+ggsave(file.path("final_fig","UMAP_RS.jpg"),dpi = 500,width = 8,height = 4)
+```
+
+```{r,fig.width=7,fig.height=12}
+sel_marker = read.csv(header=F,text="TCL1A
+TXNIP
+BCL2L1
+CXCR4
+CD44
+BIRC3
+RELB
+JUN
+SMARCB1
+TRAF3IP3
+PDCD1
+RHOA
+KRAS
+JUNB
+BCL2A1
+REL
+FOS
+CD69
+DDX17
+PARP15
+AFF3
+BCL2
+HES1
+MCL1
+GPR183
+ATF5
+FOXP1
+MYADM
+LYN
+TNFRSF4
+TNFRSF18
+PIM3
+NFKB2
+EIF3E
+VDAC1
+BAX
+ATM
+IKZF3")
+
+srt2 = subset(srt1,idents=c(8,12,3,18,16,17,5,1,4,9,10,15))
+pp = DotPlot(srt2,features = sel_marker,cluster.idents=F,cols="Spectral")+coord_flip()
+
+tmp = pp$data %>% pivot_wider(id_cols = features.plot,names_from=id,values_from=avg.exp.scaled,values_fill=0)
+hm = pheatmap::pheatmap(tmp[,-1],cluster_cols = F,clustering_distance_rows="euclidean",draw=F)
+sel_genes = as.character(tmp$features.plot)[hm$tree_row$order]
+
+
+DotPlot(srt2,features = sel_genes,cluster.idents=F,cols=c(brewer.pal(7,"YlGnBu")[1],brewer.pal(7,"YlGnBu")[7]) )+coord_flip()+labs(x=NULL,y=NULL)
+ggsave(file.path("final_fig","dotplot_cluster_selmarker_RS.pdf"),width = 5.5,height =7)
+```
+
+```{r,fig.width=8,fig.height=3}
+#BCL_family = c("BCL2L11","BAK1","BAD","HRK","BCL2A1","BAX","BCL2L1","BID","BIK","BCL2","MCL1","PMAIP1","BBC3")
+BCL_family = rev( c("BCL2","MCL1","BCL2L1","BCL2A1","HRK","BMF","BIK","BID","BBC3","BAD","PMAIP1","BCL2L11","BAK1","BAX"))
+pp = DotPlot(srt1,features = BCL_family,cluster.idents=F,cols="Spectral")+
+  coord_flip()+theme(axis.text.x = element_text(hjust = 1,angle = 30))
+tmp = pp$data %>% pivot_wider(id_cols = features.plot,names_from=id,values_from=avg.exp.scaled,values_fill=0)
+hm = pheatmap::pheatmap(tmp[,-1],cluster_cols = F,clustering_distance_rows="euclidean")
+sel_genes = as.character(tmp$features.plot)[hm$tree_row$order]
+
+ DotPlot(srt1,features = BCL_family,cluster.idents=F,cols="Spectral")+
+  coord_flip()+theme(axis.text.x = element_text(hjust = 1,angle = 30))+labs(x=NULL,y=NULL)
+ ggsave(file.path("final_fig","dotplot_BCL2_family_RS.pdf"),width = 8,height = 2.8)
+```
+
+
+
+```{r}
+c1 = adjustcolor("#D9D9D9", alpha.f = 0.1)
+c2 = adjustcolor("#3C75CD", alpha.f = 0.05)
+```
+
+
+```{r,fig.width=9,fig.height=9}
+FeaturePlot(srt,features = c("BCL2","PMAIP1","MCL1","BCL2A1","BCL2L11","BCL2L1"),ncol=3,reduction="umap",cols=c(c1,c2),pt.size=0.01,min.cutoff="q2",max.cutoff="q98",order=T)+theme(axis.ticks = element_blank(),axis.text = element_blank())
+ggsave(filename = file.path("figs","RS_fig","UMAP_BCL2_family.png"),width = 12,height = 8,dpi = 400)
+```
+
+
+```{r,fig.width=9,fig.height=9}
+FeaturePlot(srt,features = c("FOS","CXCR4","DDX17","SMCHD1","ID3","BCL2L1"),ncol=3,reduction="umap",cols=c(c1,c2),pt.size=0.01,min.cutoff="q2",max.cutoff="q98",order=T)+theme(axis.ticks = element_blank(),axis.text = element_blank())
+ggsave(filename = file.path("figs","RS_fig","UMAP_markers_RS.png"),width = 12,height = 8,dpi = 400)
+```
+
+
+```{r}
+srt2 = subset(srt1,idents=c(11,0,13,2,14,6))
+
+Idents(srt2) = srt2$condition
+tmp = srt2@meta.data[,c("sample_id","condition")]
+tmp = tmp[order(tmp$condition),]
+
+rs_marker = FindMarkers(srt2,ident.1 = "Screening",ident.2 = "Relapsed",min.diff.pct=0.05)
+
+pos10 <- rs_marker[rs_marker$p_val_adj<0.001,] %>% top_n(n = 60, wt = -p_val_adj) %>% top_n(n = 10, wt = avg_logFC)
+neg10 <- rs_marker[rs_marker$p_val_adj<0.001,] %>% top_n(n = 80, wt = -p_val_adj) %>% top_n(n = 20, wt = -avg_logFC)
+
+DotPlot(srt2,features = c(rownames(neg10),rownames(pos10)),cols=c(brewer.pal(7,"GnBu")[3],brewer.pal(7,"GnBu")[7]) )+coord_flip()+labs(x=NULL,y=NULL)+theme(axis.text.x = element_text(angle = 30,hjust=1))
+ggsave(file.path("final_fig","sup_DEgene_sharedcluster.pdf"),width = 4.5,height = 7.4)
+
+```
+
+
+
+```{r}
+M5890 <- read.table("/stornext/General/data/user_managed/grpu_mritchie_1/LuyiTian/Rachel_CLL_analysis/figs/CLL_plot/csvs/M5890.txt", quote="\"", skip=2)
+
+srt1 <- AddModuleScore(
+  object = srt1,
+  features = list(M5890$V1),
+  ctrl = 50,
+  name = 'NFKB_genes'
+)
+```
+
+
+
+
+```{r,fig.width=13,fig.height=4}
+VlnPlot(srt1,"NFKB_genes1",cols =  getPalette( length(unique(Idents(srt1))) ),pt.size = 0)+labs(title="Genes regulated by NF-kB in response to TNF",y="gene enrichment score",x=NULL)
+ggsave(file.path("final_fig","vlnplot_NFKB_modulescore.pdf"),width = 10,height = 3.5)
+```
+
+
+```{r}
+cols_p = getPalette( length(unique(Idents(srt1))) )
+names(cols_p) = levels(Idents(srt1))
+VlnPlot(srt1,"NFKB_genes1",idents = c(8,12,3,18,16,17,5,1,4,9,10,15),cols =  cols_p,pt.size = 0)+labs(title="Genes regulated by NF-kB in response to TNF",y="gene enrichment score",x=NULL)
+ggsave(file.path("final_fig","vlnplot_NFKB_modulescore_diffcluster.pdf"),width = 7,height = 3.5)
+```
+
+```{r}
+pp = DotPlot(srt1,features = "NFKB2",cluster.idents=F,cols="Spectral",split.by = "sample_id")+
+  coord_flip()+theme(axis.text.x = element_text(hjust = 1,angle = 30))
+tmp = pp$data %>% pivot_wider(id_cols = features.plot,names_from=id,values_from=avg.exp.scaled,values_fill=0)
+hm = pheatmap::pheatmap(tmp[,-1],cluster_cols = F,clustering_distance_rows="euclidean")
+```
+
+
+```{r,fig.height=14,fig.width=16}
+VlnPlot(srt1,features = rownames(srt@assays$ADT@counts)[rownames(srt@assays$ADT@counts) != "CD326-(Ep-CAM)"],assay="ADT",cols =  getPalette( length(unique(Idents(srt1))) ),pt.size = 0,ncol = 4)
+ggsave(file.path("final_fig","vlnplot_ADT_RS.pdf"),width = 16,height =12)
+```
+
+
+```{r,fig.width=12,fig.height=10}
+blank_theme <- theme_minimal()+
+  theme(
+  axis.title.x = element_blank(),
+  axis.title.y = element_blank(),
+  panel.border = element_blank(),
+  panel.grid=element_blank(),
+  axis.ticks = element_blank(),
+  plot.title=element_text(hjust = 0.5,size=14, face="bold")
+  )
+
+pp_list = list()
+
+pct_f = function(x){
+  if(x<0.20){
+    return("")
+  }else{
+    return(scales::percent(x))
+  }
+}
+color_pal = getPalette( length(unique(Idents(srt1))) )
+names(color_pal) = levels(Idents(srt1))
+for (pat_id in unique(srt1$patient_id)){
+  for (smp_id in unique(srt1$sample_id[srt1$patient_id==pat_id])) {
+    cond = unique(srt1$condition[srt1$sample_id==smp_id])
+    tmp = table(srt1$seurat_clusters[srt1$sample_id==smp_id])
+    tmp = tmp/sum(tmp)
+    tmp = tmp[tmp>0]
+    plot_df = data.frame(cluster_id = names(tmp),proportions = as.numeric(tmp))
+    plot_df$pct_txt =paste0("C",plot_df$cluster_id,": ", sapply(plot_df$proportions,pct_f))
+    plot_df$pct_txt[plot_df$proportions<0.20] = ""
+    pp = ggplot(data=plot_df,aes(x="",y=proportions,fill=cluster_id))+
+      geom_bar(width = 1, stat = "identity")+
+      scale_fill_manual(values =  color_pal )+
+      coord_polar("y", start=0)+
+        geom_text(aes(label = pct_txt ), size=4,position = position_stack(vjust = 0.5))+
+      labs(fill="cluster ID",title=paste0(pat_id," - ",cond))+
+      blank_theme
+    if (length(tmp)==length(levels(Idents(srt1)))){
+      pp = pp +theme(axis.text.x=element_blank())
+    }else{
+      pp = pp +theme(axis.text.x=element_blank(),legend.position = "none")
+    }
+      
+    pp_list[[smp_id]] = pp
+  }
+}
+
+library(patchwork)
+wrap_plots(plots = pp_list, ncol = 5,guides="collect")
+ggsave(file.path("final_fig","pie_cluster_prop_sample.pdf"),width = 11,height = 10)
+```
+
+
+```{r}
+
+```
+
+
+

@@ -1,0 +1,30 @@
+---
+title: "CLL7 analysis"
+output: html_notebook
+---
+
+
+```{r}
+library(Seurat)
+library(SeuratWrappers)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(RColorBrewer)
+library(scran)
+fig_dir = file.path("figs","CLL7_plot")
+dir.create(fig_dir)
+
+```
+
+
+
+```{r}
+srt = readRDS(file = "data/srt_cll_all.Rds")
+srt = srt[,!(srt$seurat_clusters == 15)]
+
+getPalette = colorRampPalette(brewer.pal(9, "Set1"))
+clu_colors = getPalette( length(unique(Idents(srt))) )
+names(clu_colors) = levels(Idents(srt))
+```
+

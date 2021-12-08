@@ -1,0 +1,307 @@
+title: "mutation analysis - FLTseq"
+
+
+```{r, include=FALSE, eval=TRUE}
+knitr::opts_chunk$set(warning=FALSE,message=FALSE)
+```
+
+```{r}
+#setwd("/stornext/General/data/user_managed/grpu_mritchie_1/LuyiTian/Rachel_CLL_analysis")
+library(ggplot2)
+library(dplyr)
+#library(tidyr)
+library(formattable)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(ggpubr)
+library(scran)
+#library(scater)
+library(rtracklayer)
+library(readxl)
+library(ggbio)
+#data_root = "/stornext/General/data/user_managed/grpu_mritchie_1/LuyiTian/Rachel_CLL_analysis"
+sampleID_annotation <- read_excel("sampleID_annotation.xlsx")
+fig_dir = file.path("figs","mut_plot")
+dir.create(fig_dir)
+Min_tr_cnt=10
+```
+
+
+
+```{r}
+
+transcript_id_table <- read.delim("/stornext/Genomics/data/CLL_venetoclax/FLTseq/gff_comp/transcript_id_table.csv", sep=",",header=T)
+smp_list = as.character( unique(transcript_id_table$sample_id))
+head(transcript_id_table)
+smp_list
+#smp_list = smp_list[!(smp_list=="cll63")]
+```
+
+```{r}
+#smp_list[smp_list=="cll141_v"] = "cll141v"
+#smp_list[smp_list=="cll170_i"] = "cll170i"
+#smp_list[smp_list=="cll170"] = "cll170"
+#smp_list[smp_list=="cll63_v"] = "cll63v"
+```
+
+
+```{r}
+smp_convert_table = smp_list
+
+c_smp_list = toupper(smp_list)
+
+c_smp_list[c_smp_list=="CLL141"] = "CLL141i"
+c_smp_list[c_smp_list=="CLL141_V"] = "CLL141"
+c_smp_list[c_smp_list=="CLL170_I"] = "CLL170i"
+#c_smp_list[c_smp_list=="CLL170V"] = "CLL170"
+c_smp_list[c_smp_list=="CLL63"] = "CLL63i"
+c_smp_list[c_smp_list=="CLL63_V"] = "CLL63"
+
+
+names(smp_convert_table) = c_smp_list
+```
+
+
+```{r}
+srt = readRDS(file.path("/stornext/Genomics/data/CLL_venetoclax/data_analysis/CLL_analysis/scripts","data","srt_cll_all.Rds"))
+```
+
+```{r}
+meta_cll_df = srt@meta.data[,c("Sample","Barcode","sample_id","condition","seurat_clusters")]
+head(meta_cll_df)
+```
+
+
+
+```{r}
+result_list = list()
+for(smp_ix in 1:length(smp_convert_table) ){
+#for(smp_ix in 2:5 ){
+  smp_id = smp_convert_table[[smp_ix]]
+  print(smp_id)
+  c_smp_id = names(smp_convert_table)[smp_ix]
+  if (!(c_smp_id %in% meta_cll_df$sample_id)){
+    next
+  }
+  data_dir=paste0("/stornext/Genomics/data/CLL_venetoclax/FLTseq/",smp_id,"/","mutation_known")
+  if(!dir.exists(data_dir)){
+    print(data_dir)
+    print(paste(smp_id,"do not exist"))
+    next
+  }
+  allele_stat <- read.csv(file.path(data_dir,"allele_stat.csv.gz"), comment.char="#", stringsAsFactors=FALSE)
+  #print(allele_stat[allele_stat$ch=="chr18" & allele_stat$pos==63318364,])
+  #print(allele_stat[allele_stat$ch=="chr18" & allele_stat$pos==59900026,])
+  #print(dim(allele_stat))
+  
+  REF_cnt <- read.csv(file.path(data_dir,"ref_cnt.csv.gz"), stringsAsFactors=FALSE)
+  ALT_cnt <- read.csv(file.path(data_dir,"alt_cnt.csv.gz"), stringsAsFactors=FALSE)
+  allele_stat$ch_pos = paste(allele_stat$ch,allele_stat$pos,sep="_")
+  allele_stat = allele_stat[!duplicated(allele_stat),]
+  rownames(allele_stat) = allele_stat$ch_pos
+  rownames(ALT_cnt) = paste(ALT_cnt$chr,ALT_cnt$position,sep="_")
+  rownames(REF_cnt) = paste(REF_cnt$chr,REF_cnt$position,sep="_")
+  comm_ra = intersect(rownames(ALT_cnt), rownames(REF_cnt))
+  ALT_cnt = ALT_cnt[comm_ra,-(1:2)]
+  REF_cnt = REF_cnt[comm_ra,-(1:2)]
+  allele_stat = allele_stat[comm_ra,]
+  colnames(ALT_cnt) = paste0(c_smp_id,"_lib20-",colnames(ALT_cnt),"-1")
+  colnames(REF_cnt) = paste0(c_smp_id,"_lib20-",colnames(REF_cnt),"-1")
+  
+  allele_stat$ch_pos_mut = paste(allele_stat$ch_pos,allele_stat$REF,allele_stat$ALT,allele_stat$gene_name,sep = "_")
+  rownames(ALT_cnt) = allele_stat$ch_pos_mut
+  rownames(REF_cnt) = allele_stat$ch_pos_mut
+  
+  #outl =colSums(REF_cnt) < max(colSums(REF_cnt)) & colSums(REF_cnt) > 1
+  #ALT_cnt=ALT_cnt[,outl]
+  ALT_cnt = ALT_cnt[,colnames(ALT_cnt) %in% rownames(meta_cll_df)]
+  REF_cnt = REF_cnt[,colnames(ALT_cnt)]
+  mut_sce = SingleCellExperiment(assays=list(counts=as.matrix(ALT_cnt),ref_counts=as.matrix(REF_cnt)))
+    mut_sce = addPerCellQC(mut_sce)
+  mut_sce = addPerFeatureQC(mut_sce)
+  result_list[[c_smp_id]] = mut_sce
+}
+```
+
+
+
+```{r}
+#merged_se = do.call(combineSE,unname(result_list))
+
+library(scMerge)
+merged_sce = sce_cbind(sce_list = result_list,  cut_off_batch = 0.00,method = "union",
+  cut_off_overall = 0.00,exprs=c("counts", "ref_counts"))
+#assay(merged_se,"counts")[is.na(assay(merged_se,"counts"))] = 0
+rowData(merged_sce)$gene_name = sapply(strsplit(rownames(merged_sce),"_"),function(x){x[5]})
+rowData(merged_sce)$chr = sapply(strsplit(rownames(merged_sce),"_"),function(x){x[1]})
+rowData(merged_sce)$pos = as.numeric(sapply(strsplit(rownames(merged_sce),"_"),function(x){x[2]}))
+
+```
+
+```{r}
+saveRDS(merged_sce,file = "/stornext/Genomics/data/CLL_venetoclax/data_analysis/CLL_analysis/scripts/data/fltseq_known_mut_sce.Rds")
+```
+
+
+```{r}
+merged_sce = merged_sce[,colSums(counts(merged_sce))>0]
+assay(merged_sce,"mut_matrix") = (counts(merged_sce)>0) + 0
+assay(merged_sce,"ref_matrix") = (assay(merged_sce,"ref_counts")>0) + 0
+```
+
+
+```{r}
+srt$SF3B1_mut = "No"
+col_yes = colnames(merged_sce)[counts(merged_sce)["chr2_197402109_T_C_SF3B1",]>0]
+srt$SF3B1_mut[colnames(srt) %in% col_yes] = "Yes"
+DimPlot(srt,label = F,reduction="umap",group.by ="SF3B1_mut",order = T)
+```
+
+```{r}
+table(srt$SF3B1_mut, srt$sample_id)
+```
+
+
+```{r}
+srt_sub = srt[,colnames(srt) %in% colnames(merged_sce)]
+srt_sub = srt_sub[,colnames(merged_sce)]
+srt_sub[["Mut"]] <- CreateAssayObject(counts = assay(merged_sce,"mut_matrix")[!grepl("HLA",rownames(assay(merged_sce,"mut_matrix") )),] )
+srt_sub[["Ref"]] <- CreateAssayObject(counts = assay(merged_sce,"ref_matrix")[!grepl("HLA",rownames(assay(merged_sce,"ref_matrix") )),] )
+```
+
+```{r}
+mut_cells = colnames(srt_sub)[srt_sub@assays$Mut@counts["chr2-197402109-T-C-SF3B1",]>0]
+ref_cells = colnames(srt_sub)[srt_sub@assays$Ref@counts["chr2-197402109-T-C-SF3B1",]>0]
+het_cells = colnames(srt_sub)[srt_sub@assays$Ref@counts["chr2-197402109-T-C-SF3B1",]>0 & srt_sub@assays$Mut@counts["chr2-197402109-T-C-SF3B1",]>0]
+```
+
+```{r}
+srt_sub$SF3B1_mut = "no"
+srt_sub$SF3B1_mut[colnames(srt_sub) %in% mut_cells] = "mut"
+srt_sub$SF3B1_mut[colnames(srt_sub) %in% ref_cells] = "ref"
+srt_sub$SF3B1_mut[colnames(srt_sub) %in% het_cells] = "het"
+```
+
+```{r}
+sf3b1_marker = FindMarkers(srt_sub,ident.1 = "mut",ident.2 = "ref",group.by = "SF3B1_mut")
+```
+
+```{r}
+DotPlot(srt_sub,features = rownames(sf3b1_marker)[1:20],group.by = "SF3B1_mut")+coord_flip()
+```
+
+
+```{r}
+mut_cells = colnames(srt_sub)[srt_sub@assays$Mut@counts["chr18-63318364-C-A-BCL2",]>0]
+ref_cells = colnames(srt_sub)[srt_sub@assays$Ref@counts["chr18-63318364-C-A-BCL2",]>0]
+het_cells = colnames(srt_sub)[srt_sub@assays$Ref@counts["chr18-63318364-C-A-BCL2",]>0 & srt_sub@assays$Mut@counts["chr18-63318364-C-A-BCL2",]>0]
+```
+
+```{r}
+srt_sub$BCL2_mut = "no"
+srt_sub$BCL2_mut[colnames(srt_sub) %in% mut_cells] = "mut"
+srt_sub$BCL2_mut[colnames(srt_sub) %in% ref_cells] = "ref"
+srt_sub$BCL2_mut[colnames(srt_sub) %in% het_cells] = "het"
+```
+
+```{r}
+bcl2_marker = FindMarkers(srt_sub,ident.1 = "mut",ident.2 = "ref",group.by = "BCL2_mut")
+bcl2_marker1 = FindMarkers(srt_sub[,srt_sub$sample_id=="CLL318"],ident.1 = "mut",ident.2 = "ref",group.by = "BCL2_mut")
+```
+
+```{r}
+DotPlot(srt_sub,features = rownames(bcl2_marker)[1:20],group.by = "BCL2_mut")+coord_flip()
+```
+
+
+```{r}
+saveRDS(srt_sub,file="data/fltseq_knownmarker_srt.Rds")
+```
+
+
+```{r}
+mut_marker = FindAllMarkers(srt_sub,assay="Mut",only.pos=T,min.pct = 0.05,logfc.threshold = 0.05,min.diff.pct =0.04,verbose = F)
+ref_marker = FindAllMarkers(srt_sub,assay="Ref",only.pos=T,min.pct = 0.05,logfc.threshold = 0.05,min.diff.pct =0.04,verbose = F)
+```
+
+```{r}
+mut_marker1 = mut_marker %>% left_join(ref_marker, by=c("cluster"="cluster","gene"="gene"))
+```
+
+```{r}
+plot(mut_marker1$avg_log2FC.x,mut_marker1$avg_log2FC.y)
+```
+
+
+
+
+```{r,fig.width=9,fig.height=8}
+top10 <- mut_marker %>% group_by(cluster) %>% top_n(n = 30, wt = -p_val_adj) # %>%  top_n(n = 5, wt = avg_logFC)
+top10 = top10 %>% group_by(gene) %>% top_n(n=1,wt=avg_log2FC)
+top10 = top10 %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+
+DotPlot(srt_sub,assay="Mut",features = unique(top10$gene),cluster.idents=F,cols="Spectral")+coord_flip()
+ggsave(file.path(fig_dir,"dotplot_mutations.pdf"),width = 9,height = 5)
+```
+
+```{r,fig.width=12,fig.height=10}
+DefaultAssay(srt_sub) = "Mut"
+FeaturePlot(srt_sub,features = top10$gene,reduction ="umap",ncol=4,order=T)
+```
+
+```{r}
+FeaturePlot(srt_sub,features = "chr18-63318364-C-A-BCL2",reduction ="umap",order=T)
+VlnPlot(srt_sub,features = "chr18-63318364-C-A-BCL2",assay="Mut",pt.size=0,group.by = "sample_id")
+```
+
+
+
+```{r,fig.width=16,fig.height=10}
+DefaultAssay(srt_sub) = "Ref"
+FeaturePlot(srt_sub,features = top10$gene,reduction ="umap",ncol=4,order=T)
+```
+
+```{r,fig.width=16,fig.height=14}
+VlnPlot(srt_sub,features = top10$gene,assay="Mut",pt.size=0,group.by = "sample_id")
+```
+
+
+```{r}
+FeaturePlot(srt_sub,features = "KRAS",reduction ="umap")
+```
+
+```{r,fig.width=12,fig.height=12}
+DimPlot(srt_sub,reduction="umap",split.by = "sample_id",ncol=4)
+```
+
+
+
+
+
+```{r}
+combiend_all_variants = read.csv("/stornext/Genomics/data/CLL_venetoclax/data_analysis/bulk_CNV/combiend_all_variants.csv")
+combiend_all_variants$chr = paste0("chr",combiend_all_variants$chr)
+```
+
+
+```{r}
+chr_v = sapply(strsplit(top10$gene,"-"),function(x){x[1]})
+pos_v =as.numeric( sapply(strsplit(top10$gene,"-"),function(x){x[2]}))+1
+
+sel_var = combiend_all_variants[combiend_all_variants$chr %in% chr_v & combiend_all_variants$start %in% pos_v,]
+```
+
+
+```{r}
+table(sel_var$effect)
+```
+
+
+
+```{r}
+srt$G101v_mut = "No"
+col_yes = colnames(merged_sce)[counts(merged_sce)["chr18_63318364_C_A_BCL2",]>0]
+srt$G101v_mut[colnames(srt) %in% col_yes] = "Yes"
+```
+
+

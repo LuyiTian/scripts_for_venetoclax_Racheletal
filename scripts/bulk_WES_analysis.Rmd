@@ -1,0 +1,327 @@
+title: "mutation analysis - parse bulk WES results"
+
+
+```{r, include=FALSE, eval=TRUE}
+knitr::opts_chunk$set(warning=FALSE,message=FALSE)
+```
+
+```{r}
+#setwd("/stornext/General/data/user_managed/grpu_mritchie_1/LuyiTian/Rachel_CLL_analysis")
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(formattable)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(ggpubr)
+library(scran)
+library(scater)
+library(rtracklayer)
+library(readxl)
+library(readr)
+library(ggbio)
+sampleID_annotation <- read_excel("sampleID_annotation.xlsx")
+```
+
+
+
+```{r}
+cosmic_cnt = load("/stornext/Genomics/data/CLL_venetoclax/rachelExome_B4/superFreqResources/COSMIC/cosmicCounts.Rdata")
+cosmic_genes = names(cosmicCounts$geneCounts)
+BCL2_fam = c("BCL2",
+"MCL1",
+"BCL2L1",
+"BCL2A1",
+"HRK",
+"BMF",
+"BIK",
+"BID",
+"BBC3",
+"BAD",
+"PMAIP1",
+"BCL2L11",
+"BAK1",
+"BAX"
+)
+```
+
+
+```{r}
+library(grid)
+add.flag <- function(pheatmap,
+                     kept.labels,
+                     repel.degree=0) {
+
+  # repel.degree = number within [0, 1], which controls how much 
+  #                space to allocate for repelling labels.
+  ## repel.degree = 0: spread out labels over existing range of kept labels
+  ## repel.degree = 1: spread out labels over the full y-axis
+
+  heatmap <- pheatmap$gtable
+
+  new.label <- heatmap$grobs[[which(heatmap$layout$name == "row_names")]] 
+
+  # keep only labels in kept.labels, replace the rest with ""
+  new.label$label <- ifelse(new.label$label %in% kept.labels, 
+                            new.label$label, "")
+
+  # calculate evenly spaced out y-axis positions
+  repelled.y <- function(d, d.select, k = repel.degree){
+    # d = vector of distances for labels
+    # d.select = vector of T/F for which labels are significant
+
+    # recursive function to get current label positions
+    # (note the unit is "npc" for all components of each distance)
+    strip.npc <- function(dd){
+      if(!"unit.arithmetic" %in% class(dd)) {
+        return(as.numeric(dd))
+      }
+
+      d1 <- strip.npc(dd$arg1)
+      d2 <- strip.npc(dd$arg2)
+      fn <- dd$fname
+      return(lazyeval::lazy_eval(paste(d1, fn, d2)))
+    }
+
+    full.range <- sapply(seq_along(d), function(i) strip.npc(d[i]))
+    selected.range <- sapply(seq_along(d[d.select]), function(i) strip.npc(d[d.select][i]))
+
+    return(unit(seq(from = max(selected.range) + k*(max(full.range) - max(selected.range)),
+                    to = min(selected.range) - k*(min(selected.range) - min(full.range)), 
+                    length.out = sum(d.select)), 
+                "npc"))
+  }
+  new.y.positions <- repelled.y(new.label$y,
+                                d.select = new.label$label != "")
+  new.flag <- segmentsGrob(x0 = new.label$x,
+                           x1 = new.label$x + unit(0.15, "npc"),
+                           y0 = new.label$y[new.label$label != ""],
+                           y1 = new.y.positions)
+
+  # shift position for selected labels
+  new.label$x <- new.label$x + unit(0.2, "npc")
+  new.label$y[new.label$label != ""] <- new.y.positions
+
+  # add flag to heatmap
+  heatmap <- gtable::gtable_add_grob(x = heatmap,
+                                   grobs = new.flag,
+                                   t = 4, 
+                                   l = 4
+  )
+
+  # replace label positions in heatmap
+  heatmap$grobs[[which(heatmap$layout$name == "row_names")]] <- new.label
+
+  # plot result
+  grid.newpage()
+  grid.draw(heatmap)
+
+  # return a copy of the heatmap invisibly
+  invisible(heatmap)
+}
+```
+
+
+
+```{r}
+smp_dir_list = list()
+smp_dir_list[["CLL141i"]] = c("/stornext/Genomics/data/CLL_venetoclax/rachelExome/plots/CLL2/data/CNAsegments_CLL2_rel_tumour.BCLxL_high.tsv","/stornext/Genomics/data/CLL_venetoclax/rachelExome/plots/CLL2/data/CNAsegments_CLL2_rel_tumour.BCLxL_low.tsv")
+
+#CLL16
+smp_dir_list[["CLL152"]] = "/stornext/Genomics/data/CLL_venetoclax/rachelExome_B2/plots/CLL152/data/CNAsegments_CLL152_Rel_cancer.tsv"
+smp_dir_list[["CLL5305"]] = "/stornext/Genomics/data/CLL_venetoclax/rachelExome_B3/plots/CLL16/data/CNAsegments_CLL16_Screen.tsv"
+
+smp_dir_list[["CLL318"]] = "/stornext/Genomics/data/CLL_venetoclax/rachelExome_B2/plots/CLL318/data/CNAsegments_CLL318_Rel_cancer.tsv"
+# CLL267V according to the email
+smp_dir_list[["CLL267"]] = "/stornext/Genomics/data/CLL_venetoclax/rachelExome_B3/plots/CLL12/data/CNAsegments_CLL12_Rel_cancer.tsv"
+
+#CLL26
+smp_dir_list[["CLL5306"]] = "/stornext/Genomics/data/CLL_venetoclax/rachelExome_B3/plots/CLL26/data/CNAsegments_CLL26_Screen.tsv" 
+smp_dir_list[["CLL155"]] = "/stornext/Genomics/data/CLL_venetoclax/rachelExome_B3/plots/CLL26/data/CNAsegments_CLL26_Rel_cancer.tsv"
+
+#CLL7
+smp_dir_list[["CLL5602"]] = "/stornext/Genomics/data/CLL_venetoclax/rachelExome_B4/plots/CLL7/data/CNAsegments_CLL7_Screen.tsv"
+smp_dir_list[["CLL232"]] = "/stornext/Genomics/data/CLL_venetoclax/rachelExome_B4/plots/CLL7/data/CNAsegments_CLL7_Rel_cancer.tsv"
+#CLL93
+smp_dir_list[["CLL30352"]] = "/stornext/Genomics/data/CLL_venetoclax/rachelExome_B3/plots/CLL93/data/CNAsegments_CLL93_Screen.tsv"
+smp_dir_list[["CLL181"]] = "/stornext/Genomics/data/CLL_venetoclax/rachelExome_B3/plots/CLL93/data/CNAsegments_CLL93_Rel_cancer.tsv"
+
+#CLL17
+smp_dir_list[["CLL889"]] = "/stornext/Genomics/data/CLL_venetoclax/rachelExome_B4/plots/CLL17/data/CNAsegments_CLL17_Screen.tsv"
+
+#CLL2
+smp_dir_list[["CLL126"]] = "/stornext/Genomics/data/CLL_venetoclax/rachelExome_B4/plots/CLL2/data/CNAsegments_CLL2_Screen.tsv"
+smp_dir_list[["CLL141"]] = "/stornext/Genomics/data/CLL_venetoclax/rachelExome_B4/plots/CLL2/data/CNAsegments_CLL2_Rel.tsv"
+
+#CLL23
+smp_dir_list[["CLL108"]] = "/stornext/Genomics/data/CLL_venetoclax/rachelExome_B4/plots/CLL23/data/CNAsegments_CLL23_Screen.tsv"
+smp_dir_list[["CLL170"]] = "/stornext/Genomics/data/CLL_venetoclax/rachelExome_B4/plots/CLL23/data/CNAsegments_CLL23_Rel.tsv"
+smp_dir_list[["CLL170i"]] = "/stornext/Genomics/data/CLL_venetoclax/rachelExome_B4/plots/CLL23/data/CNAsegments_CLL23_BTKi.tsv"
+
+#CLL3
+smp_dir_list[["CLL156"]] = "/stornext/Genomics/data/CLL_venetoclax/rachelExome_B4/plots/CLL3/data/CNAsegments_CLL3_Screen.tsv"
+smp_dir_list[["CLL153"]] = "/stornext/Genomics/data/CLL_venetoclax/rachelExome_B2/plots/CLL153/data/CNAsegments_CLL153_Rel_cancer.tsv"
+
+#CLL5
+smp_dir_list[["CLL5301"]] = "/stornext/Genomics/data/CLL_venetoclax/rachelExome_B4/plots/CLL5/data/CNAsegments_CLL5_Screen.tsv"
+smp_dir_list[["CLL63"]] = "/stornext/Genomics/data/CLL_venetoclax/rachelExome_B3/plots/CLL5/data/CNAsegments_CLL5_Rel_cancer.tsv"
+
+#CLL6
+smp_dir_list[["CLL175"]] = "/stornext/Genomics/data/CLL_venetoclax/rachelExome_B4/plots/CLL6/data/CNAsegments_CLL6_Rel_tumour.tsv"
+smp_dir_list[["CLL5309"]] = "/stornext/Genomics/data/CLL_venetoclax/rachelExome_B4/plots/CLL6/data/CNAsegments_CLL6_Screen_tumour.tsv"
+
+#CLL9
+smp_dir_list[["CLL171"]] = "/stornext/Genomics/data/CLL_venetoclax/rachelExome/plots/CLL9/data/CNAsegments_CLL9_rel_tumour.BCLxL_high.tsv"
+smp_dir_list[["CLL130"]] = "/stornext/Genomics/data/CLL_venetoclax/rachelExome_B4/plots/CLL9/data/CNAsegments_CLL9_Screen.tsv"
+
+#CLL95
+smp_dir_list[["CLL95s"]] = "/stornext/Genomics/data/CLL_venetoclax/rachelExome_B4/plots/CLL95/data/CNAsegments_CLL95_Screen.tsv"
+smp_dir_list[["CLL273"]] = c("/stornext/Genomics/data/CLL_venetoclax/rachelExome/plots/CLL95/data/CNAsegments_CLL95_rel_MCL1_high.tsv","/stornext/Genomics/data/CLL_venetoclax/rachelExome/plots/CLL95/data/CNAsegments_CLL95_rel_MCL1_low.tsv")
+
+
+```
+
+
+```{r}
+combined_cnv=c()
+for (smp_id in names(smp_dir_list)) {
+  res_df = c()
+  for (smp_path in smp_dir_list[[smp_id]]) {
+    Rel_cancer <- read.delim(smp_path )
+    Rel_cancer = Rel_cancer[Rel_cancer$call != "AB" & !(Rel_cancer$chr %in% c("X","Y") ),]
+    if(nrow(Rel_cancer)==0){
+      next
+    }
+    Rel_cancer_amp = Rel_cancer[sapply(Rel_cancer$call,nchar)>2,]
+    Rel_cancer_del = Rel_cancer[sapply(Rel_cancer$call,nchar)<2,]
+    if(nrow(Rel_cancer_amp)>0){
+          sel_ge_amp = unlist(unname(sapply(Rel_cancer_amp$genes,function(x){strsplit(x,",")} )))
+    }else{
+          sel_ge_amp = c()
+    }
+    if(nrow(Rel_cancer_del)>0){
+      sel_ge_del = unlist(unname(sapply(Rel_cancer_del$genes,function(x){strsplit(x,",")} )))
+    }else{
+      sel_ge_del = c()
+    }
+    tmp_df = data.frame(gene_id=c(sel_ge_del,sel_ge_amp),smp_id = smp_id,cnv_status=c(rep(-1,length(sel_ge_del)),rep(1,length(sel_ge_amp)) ) )
+    if(length(res_df)==0){
+      res_df = tmp_df
+    }else{
+      res_df = rbind(res_df,tmp_df)
+    }
+  }
+  if(any(duplicated(res_df[,c("gene_id","smp_id")]))){
+    print(res_df[duplicated(res_df[,c("gene_id","smp_id")]),])
+    res_df = res_df[!duplicated(res_df[,c("gene_id","smp_id")]),]
+  }
+  if(length(combined_cnv)==0){
+    combined_cnv = res_df
+  }else{
+    combined_cnv = rbind(combined_cnv,res_df)
+  }
+}
+
+```
+
+
+```{r}
+cnv_mat=combined_cnv %>% pivot_wider(id_cols ="gene_id" ,names_from = "smp_id",values_from = "cnv_status",values_fill=0)
+ge_id = cnv_mat$gene_id
+cnv_mat = as.matrix(cnv_mat[,-1])
+rownames(cnv_mat) = ge_id
+cnv_mat =cnv_mat[rowSums(cnv_mat==0)<(ncol(cnv_mat)-2),]
+```
+
+```{r}
+saveRDS(cnv_mat,file="data/cnv_mat.Rds")
+```
+
+
+```{r}
+col_anno = as.data.frame(sampleID_annotation[match(colnames(cnv_mat),sampleID_annotation$sample_id),])
+rownames(col_anno) = col_anno$sample_id
+col_anno = col_anno[,c("CLL_status","patient_id")]
+```
+
+
+```{r}
+pheat = pheatmap::pheatmap(cnv_mat,show_rownames = T,annotation_col = col_anno,silent=T,main="CNV output from WES red_amp blue_del")#,filename = "figs/bulkWES_allgene.png",width = 12,height = 16)
+
+png("figs/CNV_plots/bulkWES_allgene.png",width = 1200,height = 1200)
+add.flag(pheat,kept.labels=BCL2_fam[BCL2_fam %in% rownames(cnv_mat)])
+dev.off()
+```
+
+
+
+
+
+```{r}
+srt = readRDS("data/srt_cll_RS.Rds")
+srt.marker = read.csv(file="data/srt.marker_RS.csv")
+srt.marker = srt.marker[srt.marker$p_val_adj<0.01,]
+srt.marker = srt.marker %>% group_by(gene) %>% top_n(n=1,wt=avg_logFC)
+srt.marker = srt.marker[srt.marker$pct.1-srt.marker$pct.2>0,]
+```
+
+
+```{r}
+table(rownames(cnv_mat) %in% srt.marker$gene)
+```
+
+
+```{r}
+cnv_mat_sel = cnv_mat[rownames(cnv_mat) %in% srt.marker$gene, ]
+
+srt.marker_sel = srt.marker[srt.marker$gene %in% rownames(cnv_mat_sel), ]
+annotation_row = data.frame(row.names = srt.marker_sel$gene,cluster_id=as.factor(srt.marker_sel$cluster))
+annotation_row = annotation_row[rownames(cnv_mat_sel),,drop=FALSE]
+
+phat_sel = pheatmap::pheatmap(cnv_mat_sel,cluster_rows = T,show_rownames = T,annotation_row = annotation_row,annotation_col = col_anno,silent=T,main="CNV output from WES red_amp blue_del selected genes")
+
+int_ge = unique(c(cosmic_genes,BCL2_fam))
+int_ge = int_ge[int_ge %in% rownames(cnv_mat_sel)]
+```
+
+
+```{r}
+png("figs/CNV_plots/bulkWES_selgene.png",width = 1200,height = 1200)
+add.flag(phat_sel,kept.labels=int_ge)
+dev.off()
+```
+
+```{r}
+#saveRDS(cnv_mat_sel,file="data/cnv_mat_sel.Rds")
+```
+
+
+```{r}
+library(readxl)
+sampleID_annotation_bulk <- read_excel("/stornext/Genomics/data/CLL_venetoclax/data_analysis/bulk_CNV/sampleID_annotation_bulk.xlsx")
+
+sampleID_annotation_bulk = sampleID_annotation_bulk[sampleID_annotation_bulk$CLL_status != "Healthy",]
+
+sampleID_annotation_bulk$SNV_profile = paste(sampleID_annotation_bulk$SNV_profile,"somaticVariants.csv",sep="/")
+
+
+tmp_f = function(x){
+  tmp=read.csv(sampleID_annotation_bulk$SNV_profile[x],row.names = 1) 
+  tmp$sample = sampleID_annotation_bulk$lower_name[x]
+  tmp
+}
+combined_df = Reduce(rbind,lapply(1:nrow(sampleID_annotation_bulk),tmp_f))
+combined_df = combined_df[combined_df$reference %in% c("A","T","C","G") & combined_df$variant %in% c("A","T","C","G"),]
+combined_df = combined_df[!(combined_df$germlineLike == "YES"),]
+
+
+combined_df[combined_df$chr==18 & combined_df$start==63318365,]
+```
+
+
+```{r}
+write.csv(combined_df,"data/combiend_all_variants.csv",row.names = F,quote = FALSE)
+```
+
+
+

@@ -1,0 +1,113 @@
+---
+title: "integrate public data"
+output: html_notebook
+---
+
+
+```{r, include=FALSE, eval=TRUE}
+knitr::opts_chunk$set(warning=FALSE,message=FALSE)
+#setwd("/stornext/Genomics/data/CLL_venetoclax/data_analysis/CLL_analysis/scripts")
+```
+
+```{r}
+library(tidyr)
+library(dplyr)
+library(Seurat)
+library(ggplot2)
+library(RColorBrewer)
+library(ggpubr)
+data_root = "/stornext/Genomics/data/CLL_venetoclax/data_analysis/CLL_analysis/scripts"
+fig_dir = file.path(data_root, "figs","ibrutinib")
+dir.create(fig_dir)
+```
+
+
+```{r}
+srt = readRDS(file = "data/srt_cll_all.Rds")
+srt = srt[,!(srt$seurat_clusters == 15)]
+
+getPalette = colorRampPalette(brewer.pal(9, "Set1"))
+clu_colors = getPalette( length(unique(Idents(srt))) )
+names(clu_colors) = levels(Idents(srt))
+```
+
+```{r}
+srt_btki = readRDS(file="/stornext/Genomics/data/CLL_venetoclax/public_data/ibrutinib_NC/data/srt_ibrtu.Rds")
+
+srt_btki = srt_btki[!(grepl("^IG",rownames(srt_btki))| grepl("^TR",rownames(srt_btki))),]
+DimPlot(srt_btki,label=T)
+```
+
+```{r}
+srt_btki = srt_btki[,srt_btki$seurat_clusters %in% c(0,2,3,4,5,13)]
+ library(SeuratObject)
+```
+
+
+```{r}
+srt_i <- RunFastMNN(object.list = c(SplitObject(srt[,srt$patient_id %in% c("CLL2", "CLL23",  "CLL5" )], split.by = "sample_id"),SplitObject(srt_btki,split.by = "batch")),verbose = F)# merge.order=list(list(1:7),list(8:(8+11)) ) )
+srt_i <- RunUMAP(srt_i, reduction = "mnn", dims = 1:30)
+srt_i <- FindNeighbors(srt_i, reduction = "mnn", dims = 1:30)
+srt_i <- FindClusters(srt_i)
+srt_i$condition[is.na(srt_i$condition)] = srt_i$batch[is.na(srt_i$condition)]
+srt_i$study = "ibrtu_study"
+srt_i$study[!is.na(srt_i$patient_id)] = "this_study"
+```
+
+
+```{r,fig.width=8,fig.height=8}
+DimPlot(srt_i,split.by = "sample_id",ncol=3,label=T)
+```
+
+```{r,fig.width=8,fig.height=8}
+DimPlot(srt_i,split.by = "condition",ncol=5,label=T)
+```
+
+```{r}
+plot_df = srt_i@meta.data
+plot_df = plot_df %>% group_by(condition) %>% mutate(total_c=n()) %>% group_by(condition,seurat_clusters) %>% summarise(pct=n()/total_c)
+plot_df = plot_df[!duplicated(plot_df),]
+pp2 = ggplot(data=plot_df,aes(x=condition,y=pct,fill=seurat_clusters))+
+  geom_bar(stat = "identity")+
+ # scale_fill_manual(values = clu_colors)+
+  labs(x=NULL,y="Proportions",fill="cluster ID",title="CLL23")+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle=30,hjust = 1))
+pp2
+```
+
+
+```{r}
+
+```
+
+
+
+```{r}
+tmp_marker = FindMarkers(srt_i,ident.1 = 9,ident.2 = 8,min.diff.pct = 0.05,verbose = F)
+```
+
+```{r}
+com_marker = FindConservedMarkers(srt23i,ident.1 = '3',ident.2 = '6',grouping.var = "study",verbose=F)
+```
+
+
+```{r,fig.width=8,fig.height=12}
+VlnPlot(srt_i,features =  c("MCL1","BCL2","CXCR4","TCL1A"),group.by = "condition",pt.size = 0,ncol=1)
+```
+
+```{r,fig.width=8,fig.height=12}
+VlnPlot(srt_i,features =  c("MCL1","BCL2","CXCR4","TCL1A"),group.by = "seurat_clusters",pt.size = 0,ncol=1)
+```
+
+```{r}
+srt_i.marker = FindAllMarkers(srt_i,min.diff.pct = 0.05,only.pos = T,verbose = F,max.cells.per.ident = 1000)
+```
+
+```{r,fig.width=5,fig.height=9}
+top10 <- srt_i.marker[srt_i.marker$p_val_adj<0.01,] %>% group_by(cluster) %>% top_n(n = 30, wt = -p_val_adj) # %>%  top_n(n = 5, wt = avg_logFC)
+top10 = top10 %>% group_by(gene) %>% top_n(n=1,wt=avg_log2FC)
+top10 = top10 %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC)
+
+DotPlot(srt_i,features = unique(top10$gene),cluster.idents=F,cols=c(brewer.pal(7,"YlGnBu")[1],brewer.pal(7,"YlGnBu")[7]) )+coord_flip()+labs(x=NULL,y=NULL)
+```

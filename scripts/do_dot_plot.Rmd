@@ -1,0 +1,175 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+library(Seurat)
+library(SeuratWrappers)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(RColorBrewer)
+library(scran)
+library(ggpubr)
+fig_dir = file.path("figs")
+dir.create(fig_dir)
+
+```
+
+
+```{r}
+srt = readRDS(file = "data/srt_cll_all.Rds")
+srt = srt[,!(srt$seurat_clusters == 15)]
+
+getPalette = colorRampPalette(brewer.pal(9, "Set1"))
+clu_colors = getPalette( length(unique(Idents(srt))) )
+names(clu_colors) = levels(Idents(srt))
+```
+
+
+
+```{r}
+srt_sel = srt[,srt$condition=="Relapsed" ]
+```
+
+
+```{r}
+table(srt_sel$patient_id)
+```
+
+```{r}
+srt_sel$patient_id = factor(srt_sel$patient_id,levels = c("CLL2","CLL3","CLL5","CLL6","CLL7","CLL9","CLL12","CLL16","CLL17","CLL23","CLL93","CLL95","CLL26"))
+```
+
+
+```{r,fig.width=5,fig.height=1.2}
+pp1 = DotPlot(srt_sel, features = rev(c("REL","RELB","NFKB2","MCL1","BCL2A1","BCL2L1")),group.by = "patient_id")+coord_flip()
+pp1
+```
+
+
+```{r}
+srt_sub = readRDS(file="data/fltseq_knownmarker_srt.Rds")
+merged_sce_rach = readRDS(file = "/stornext/Genomics/data/CLL_venetoclax/data_analysis/CLL_analysis/scripts/data/rachseq_mut_sce.Rds")
+```
+
+```{r}
+mut_cells = colnames(srt_sub)[srt_sub@assays$Mut@counts["chr18-63318364-C-A-BCL2",]>0]
+ref_cells = colnames(srt_sub)[srt_sub@assays$Ref@counts["chr18-63318364-C-A-BCL2",]>0]
+het_cells = colnames(srt_sub)[srt_sub@assays$Ref@counts["chr18-63318364-C-A-BCL2",]>0 & srt_sub@assays$Mut@counts["chr18-63318364-C-A-BCL2",]>0]
+```
+
+```{r}
+srt_sub$BCL2_mut = "no"
+srt_sub$BCL2_mut[colnames(srt_sub) %in% mut_cells] = "mut"
+srt_sub$BCL2_mut[colnames(srt_sub) %in% ref_cells] = "ref"
+srt_sub$BCL2_mut[colnames(srt_sub) %in% het_cells] = "het"
+```
+
+```{r}
+
+
+srt_sub@meta.data %>% group_by(patient_id, BCL2_mut) %>% summarise(cnt=n()) %>% pivot_wider(id_cols = patient_id,names_from = BCL2_mut,values_from = cnt)
+
+
+```
+
+
+```{r}
+lr_data = read.csv(text = "patient_id,BCL2_mut,BAX_loss,PMAIP1_loss
+CLL12,0,0,0
+CLL16,0,0,0
+CLL17,28,0,0
+CLL2,17,0,5
+CLL23,0,0,0
+CLL26,0,0,0
+CLL3,0,0,0
+CLL5,0,0,0
+CLL6,0,22,0
+CLL7,0,0,0
+CLL9,0,0,0
+CLL93,0,0,0
+CLL95,0,0,0")
+
+lr_data = as.data.frame(lr_data)
+rownames(lr_data) = lr_data$patient_id
+lr_data = t(lr_data[,-1])
+```
+
+```{r}
+#pheatmap::pheatmap(lr_data,cluster_rows = F,cluster_cols = F,color = c())
+```
+
+
+```{r}
+lr_data = read.csv(text = "patient_id,BCL2_mut,BAX_loss,PMAIP1_loss
+CLL12,5,0,0
+CLL16,0,0,0
+CLL17,28,0,0
+CLL2,17,0,5
+CLL23,0,0,0
+CLL26,0,0,0
+CLL3,0,0,0
+CLL5,5,0,0
+CLL6,0,22,0
+CLL7,0,0,0
+CLL9,0,0,0
+CLL93,0,0,0
+CLL95,0,0,0")
+lr_data_l = lr_data %>% pivot_longer(cols = 2:4)
+lr_data_l$name = factor(lr_data_l$name,level = rev(c("BCL2_mut","BAX_loss","PMAIP1_loss")))
+
+lr_data_l$patient_id = factor(lr_data_l$patient_id,levels = c("CLL2","CLL3","CLL5","CLL6","CLL7","CLL9","CLL12","CLL16","CLL17","CLL23","CLL93","CLL95","CLL26"))
+```
+
+
+```{r}
+pp2 = ggplot(data=lr_data_l,aes(x=patient_id,y=name,size=value))+
+  geom_point(col="#B2CBA4")+
+  scale_size(range = c(0, 6), limits = c(0, 30)) +
+  theme(axis.title.x = element_blank(), axis.title.y = element_blank())+
+  cowplot::theme_cowplot()
+```
+
+
+```{r}
+wes_data = read.csv(text = "patient_id,BCL2_mut,BAX_mut,CDKN2A_del,MCL1_amp,BCL2A1_amp,BCL2L1_amp
+CLL12,4,0,0,24,0,0
+CLL16,8,0,0,60,0,0
+CLL17,70,0,0,0,0,0
+CLL2,25,0,0,0,0,0
+CLL23,0,0,0,0,0,0
+CLL26,0,0,0,0,0,0
+CLL3,64,0,0,0,0,0
+CLL5,12,0,0,0,0,0
+CLL6,0,33,0,0,0,0
+CLL7,0,0,0,0,0,0
+CLL9,0,0,0,0,0,0
+CLL93,0,0,0,0,0,0
+CLL95,0,0,0,100,0,0")
+
+wes_data_l = wes_data %>% pivot_longer(cols = 2:7)
+wes_data_l$name = factor(wes_data_l$name,level = rev(c("BCL2_mut","BAX_mut","CDKN2A_del","MCL1_amp","BCL2A1_amp","BCL2L1_amp")))
+
+wes_data_l$patient_id = factor(wes_data_l$patient_id,levels = c("CLL2","CLL3","CLL5","CLL6","CLL7","CLL9","CLL12","CLL16","CLL17","CLL23","CLL93","CLL95","CLL26"))
+```
+
+```{r}
+pp3 = ggplot(data=wes_data_l,aes(x=patient_id,y=name,size=value))+
+  geom_point(col="#C65911")+
+  scale_size(range = c(0, 6), limits = c(0, 100)) +
+  theme(axis.title.x = element_blank(), axis.title.y = element_blank())+
+  cowplot::theme_cowplot()
+```
+
+
+
+```{r}
+ggarrange(pp1,pp2,pp3,ncol=1,nrow=3,align="v",heights=c(1.5,1,1.3))
+ggsave(file.path(fig_dir,"dotplot_summary.pdf"),width = 8,height = 5)
+```
+
+
+

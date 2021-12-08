@@ -1,0 +1,791 @@
+title: "DTU compare screen and relapsed samples"
+
+
+```{r, include=FALSE, eval=TRUE}
+knitr::opts_chunk$set(warning=FALSE,message=FALSE)
+```
+
+```{r}
+#setwd("/stornext/General/data/user_managed/grpu_mritchie_1/LuyiTian/Rachel_CLL_analysis")
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(formattable)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(ggpubr)
+library(scran)
+#library(scater)
+library(rtracklayer)
+library(readxl)
+library(ggbio)
+data_root = "/stornext/Genomics/data/CLL_venetoclax/data_analysis/CLL_analysis/scripts"
+fig_dir = file.path(data_root, "figs","FLTseq_isoforms")
+dir.create(fig_dir)
+sampleID_annotation <- read_excel("sampleID_annotation.xlsx")
+Min_tr_cnt=10
+```
+
+
+```{r}
+
+transcript_id_table <- read.delim("/stornext/Genomics/data/CLL_venetoclax/FLTseq/gff_comp/transcript_id_table.csv", sep=",",header=T)
+smp_list = as.character( unique(transcript_id_table$sample_id))
+head(transcript_id_table)
+smp_list
+#smp_list = smp_list[!(smp_list=="cll63")]
+```
+
+
+
+```{r}
+get_barcode_seq = function(meta_df){
+  cell_bc = rownames(meta_df)
+  #cell_bc = sapply(strsplit(cell_bc,split="_"),function(x){x[2]})
+  cell_bc = sapply(strsplit(cell_bc,split="-"),function(x){x[2]})
+  return(cell_bc)
+}
+
+#meta_df = readRDS("srt_metadata.Rds")
+# meta_df$barcode_seq = get_barcode_seq(meta_df)
+sce = HDF5Array::loadHDF5SummarizedExperiment("data_h5")
+
+
+
+meta_df = as.data.frame(colData(sce))
+meta_df$ct = meta_df$major_celltype
+meta_df$barcode_seq = get_barcode_seq(meta_df)
+meta_df$lib_batch = sapply(strsplit(meta_df$Sample,split="_"),function(x){x[2]})
+```
+
+
+```{r}
+smp_convert_table = smp_list
+
+c_smp_list = toupper(smp_list)
+
+c_smp_list[c_smp_list=="CLL141"] = "CLL141i"
+c_smp_list[c_smp_list=="CLL141_V"] = "CLL141"
+c_smp_list[c_smp_list=="CLL170_I"] = "CLL170i"
+c_smp_list[c_smp_list=="CLL63"] = "CLL63i"
+c_smp_list[c_smp_list=="CLL63_V"] = "CLL63"
+
+
+names(smp_convert_table) = c_smp_list
+```
+
+
+
+```{r,eval=FALSE}
+#smp_list=c()
+result_list = list()
+for(smp_ix in 1:length(smp_convert_table) ){
+  smp_id = smp_convert_table[[smp_ix]]
+  print(smp_id)
+  c_smp_id = names(smp_convert_table)[smp_ix]
+  tr_id_table_sel = transcript_id_table[transcript_id_table$sample_id==smp_id,]
+
+    data_dir=paste0("/stornext/Genomics/data/CLL_venetoclax/FLTseq/",smp_id,"/",smp_id,"_isoform_outs")
+  
+  transcript_count <- read.csv(file.path(data_dir,"transcript_count.csv.gz"), stringsAsFactors=FALSE)
+    meta_df_sel = meta_df[meta_df$sample_id == c_smp_id & meta_df$lib_batch=="lib20",]
+  
+  tr_sce = SingleCellExperiment(assays=list(counts=as.matrix(transcript_count[,-c(1,2)]) ))
+  rownames(tr_sce) = transcript_count$transcript_id
+  rowData(tr_sce)$gene_id = transcript_count$gene_id
+  tr_sce = addPerCellQC(tr_sce)
+  tr_sce = addPerFeatureQC(tr_sce)
+  keep.hi <- isOutlier(tr_sce$sum, type="higher", log=TRUE)
+  keep.low <- isOutlier(tr_sce$sum, type="lower", log=TRUE)
+  tr_sce = tr_sce[,(!keep.hi) & (!keep.low)]
+  tr_sce = tr_sce[rowSums(counts(tr_sce))>Min_tr_cnt,]
+  print(table(colnames(tr_sce) %in% meta_df_sel$barcode_seq))
+  print(table(meta_df_sel$barcode_seq %in% colnames(tr_sce)))
+  tr_sce = tr_sce[,colnames(tr_sce) %in% meta_df_sel$barcode_seq]
+  meta_df_sel = meta_df_sel[match(colnames(tr_sce),meta_df_sel$barcode_seq),]
+  tr_sce = tr_sce[rownames(tr_sce) %in% tr_id_table_sel$raw_tr_id,]
+  colnames(tr_sce) = rownames(meta_df_sel)
+  rowData(tr_sce)$u_trid = tr_id_table_sel$joint_tr_id[match(rownames(tr_sce),tr_id_table_sel$raw_tr_id)]
+  #tr_sce = tr_sce[rowData(tr_sce)$gene_id %in% sel_mk_gene]
+  joint_tr_cnt = sumCountsAcrossCells(t(counts(tr_sce)),rowData(tr_sce)$u_trid)
+  tr_m_new = SingleCellExperiment(assays=SimpleList(counts=t(assay(joint_tr_cnt,"sum"))) )
+  row_mt = as.data.frame(rowData(tr_sce))
+  row_mt$joint_tr_id = tr_id_table_sel$joint_tr_id[match(rownames(row_mt),tr_id_table_sel$raw_tr_id)]
+
+  rowData(tr_m_new)$gene_id = row_mt$gene_id[match(rownames(tr_m_new), row_mt$joint_tr_id)]
+  tr_m_new$sample_id=c_smp_id
+  result_list[[smp_id]] = tr_m_new
+}
+saveRDS(result_list,file="data/sc_fltseq.Rds")
+#
+```
+
+```{r}
+result_list = readRDS(file="data/sc_fltseq.Rds")
+```
+
+
+```{r,eval=FALSE}
+rm(result_list)
+gc()
+```
+
+
+
+
+
+
+
+```{r}
+merged_se_bulk<-sce_cbind(lapply(names(result_list),function(x){sumCountsAcrossCells(result_list[[x]],rep(x,ncol(result_list[[x]])))}),method="union",exprs="sum",cut_off_batch =0,cut_off_overall=0.001,batch_names =  names(result_list) )
+row_mt = Reduce(rbind,lapply(result_list,rowData))
+merged_se_bulk = merged_se_bulk[rowSums(assay(merged_se_bulk,"sum")>0)>1,]
+merged_se_bulk = merged_se_bulk[rowSums(assay(merged_se_bulk,"sum"))>40,]
+```
+
+
+
+```{r}
+merged_sce = merged_se_bulk
+
+
+rowData(merged_sce)$locu_id = row_mt$gene_id[match(rownames(merged_sce),rownames(row_mt))]
+
+rowData(merged_sce)$cnt_sum = rowSums(assay(merged_sce,"sum"))
+row_meta = as.data.frame(rowData(merged_sce))
+row_meta$r_na = rownames(row_meta)
+row_meta = row_meta %>% group_by(locu_id) %>% top_n(n = 6, wt = cnt_sum)
+merged_sce = merged_sce[rownames(merged_sce) %in% row_meta$r_na,]
+```
+
+convert ID
+
+```{r}
+  rowData(merged_sce)$gene_id=gsub("\\..*","", rowData(merged_sce)$locu_id)
+  gene_name = mapIds(org.Hs.eg.db,
+                     keys=rowData(merged_sce)$gene_id,
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+  gene_name[is.na(gene_name)] = rowData(merged_sce)$gene_id[is.na(gene_name)]
+  gene_name[is.na(names(gene_name))] = rowData(merged_sce)$gene_id[is.na(names(gene_name))]
+  gene_name = unname(unlist(gene_name))
+  rowData(merged_sce)$gene_name = gene_name
+```
+
+```{r}
+merged_sce = merged_sce[,!(colnames(merged_sce)=="cll267")]
+merged_sce = merged_sce[!grepl("^IG",rowData(merged_sce)$gene_name),]
+```
+
+
+```{r}
+cond = rep("WT",ncol(merged_sce))
+cond[colnames(merged_sce) %in% c("cll153","cll155","cll156","cll5306","cll318")] = "SF3B1_mut"
+colData(merged_sce)$group = cond
+design_mat = model.matrix(~cond)
+
+allcounts = DGEList(counts=assay(merged_sce,"sum"),genes = as.data.frame(rowData(merged_sce))) # may need a lot of RAM
+allcounts <- calcNormFactors(allcounts)
+allcounts = estimateDisp(allcounts, design=design_mat, robust=TRUE)
+
+fit = glmQLFit(allcounts, design_mat)
+
+lrt1 = glmQLFTest(fit)
+tp1 = topTags(lrt1,n=Inf)@.Data[[1]]
+
+ds <- diffSpliceDGE(fit, geneid="gene_id")
+tt1 <- topSpliceDGE(ds, test="gene", n=Inf)
+
+```
+
+```{r}
+merged_sce_mut = merged_sce[,merged_sce$group=="SF3B1_mut"]
+merged_sce_mut = merged_sce_mut[rowSums(assay(merged_sce_mut,"sum")>0)>1,]
+merged_sce_mut = merged_sce_mut[rowSums(assay(merged_sce_mut,"sum"))>40,]
+
+cond = rep("Relapsed",ncol(merged_sce_mut))
+cond[colnames(merged_sce_mut) %in% c("cll156","cll5306")] = "SF3B1_mut"
+
+design_mat = model.matrix(~cond)
+
+allcounts = DGEList(counts=assay(merged_sce_mut,"sum"),genes = as.data.frame(rowData(merged_sce_mut))) # may need a lot of RAM
+allcounts <- calcNormFactors(allcounts)
+allcounts = estimateDisp(allcounts, design=design_mat, robust=TRUE)
+
+fit = glmQLFit(allcounts, design_mat)
+
+lrt1 = glmQLFTest(fit)
+tp1_rs = topTags(lrt1,n=Inf)@.Data[[1]]
+
+ds <- diffSpliceDGE(fit, geneid="gene_id")
+tt1_rs <- topSpliceDGE(ds, test="gene", n=Inf)
+tmp_mut_tt = tp1_rs[tp1_rs$gene_name %in% tt1_rs$gene_name[tt1_rs$FDR<0.05],]
+tmp_mut_tt$tr_id = rownames(tmp_mut_tt)
+tmp_mut_tt = tmp_mut_tt %>% group_by(gene_name) %>% top_n(1,wt=logFC)
+```
+
+```{r}
+tt1
+```
+```{r}
+isoform_gff = import("/stornext/Genomics/data/CLL_venetoclax/FLTseq/gff_comp/combined_transcripts.gff3")
+isoform_gff$Parent = as.character(isoform_gff$Parent)
+isoform_gff$transcript_id= unlist(lapply(strsplit(isoform_gff$Parent, split = ":"),function(x){x[2]}))
+```
+
+```{r}
+sel_ge = "ENSG00000010671"
+sel_tr = rownames(merged_sce)[rowData(merged_sce)$gene_id ==sel_ge]
+isoform_sel = isoform_gff[isoform_gff$transcript_id %in% sel_tr,]
+isoform_sel <- split(isoform_sel, isoform_sel$transcript_id)
+g = ggplot(isoform_sel) + 
+  geom_alignment(label = TRUE)+
+  theme_bw()+theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+                   panel.background = element_blank(), axis.line = element_line(colour = "black"))
+g
+```
+```{r}
+tmp = assay(merged_sce,"sum")[rowData(merged_sce)$gene_id ==sel_ge,]
+tmp = t(t(tmp)/colSums(tmp))
+#tmp = tmp[,colSums(tmp)>=]
+pheatmap::pheatmap(tmp[,order(cond)],scale="none",cluster_cols = F,annotation_col = as.data.frame(colData(merged_sce))[,"group",drop=F])
+```
+
+
+```{r}
+rowData(merged_sce)$cnt_sum_wt = rowSums(assay(merged_sce,"sum")[,merged_sce$group=="WT"])
+rowData(merged_sce)$cnt_sum_mut = rowSums(assay(merged_sce,"sum")[,merged_sce$group=="SF3B1_mut"])
+rowData(merged_sce)$smp_sum_mut = rowSums(assay(merged_sce,"sum")[,merged_sce$group=="SF3B1_mut"]>0)
+rowData(merged_sce)$smp_sum_wt = rowSums(assay(merged_sce,"sum")[,merged_sce$group=="WT"]>0)
+gene_meta = as.data.frame(rowData(merged_sce))
+gene_meta$tr_id = rownames(gene_meta)
+gene_meta = gene_meta %>% group_by(gene_id) %>% mutate(rank_all = rank(-cnt_sum),
+                                                       rank_wt = rank(-cnt_sum_wt),
+                                                       rank_mut = rank(-cnt_sum_mut))
+
+
+
+
+DTU_gene = tt1$gene_id[tt1$FDR<0.05]
+
+gene_meta_sel = gene_meta[gene_meta$gene_id %in% DTU_gene,]
+
+no_mut_isoform = 0
+mut_isoform_in1smp = 0
+mut_isoform_enrich_in_wt = 0
+
+gene_meta$enrich_status = NA
+gene_status = list()
+for (ge in unique(gene_meta_sel$gene_id)) {
+  gene_meta_tmp = gene_meta[gene_meta$gene_id==ge,]
+  tp_mut = tp1[tp1$gene_id==ge,]
+  tp_mut$tr_id = rownames(tp_mut)
+  tp_mut = tp_mut %>% left_join(gene_meta_tmp,by=c("tr_id"="tr_id"))
+  if(all(tp_mut$logFC>0)){ # isoforms enriched in SF3B1 mutated samples should have <0 logFC
+    no_mut_isoform = no_mut_isoform+1
+    gene_status[[ge]] = "no_mut_isoform"
+  }else{
+    tp_mut = tp_mut[tp_mut$logFC<0,]
+    if(all(tp_mut$smp_sum_mut<2)){ # enriched isoforms should express in at least 2 samples
+      mut_isoform_in1smp = mut_isoform_in1smp+1
+      gene_status[[ge]] = "mut_isoform_in1smp"
+    }else{
+      tp_mut = tp_mut[tp_mut$smp_sum_mut>1,]
+      tp_mut = tp_mut[order(tp_mut$logFC)[1],]
+      if(tp_mut$cnt_sum_wt/tp_mut$cnt_sum.x>0.3){
+        mut_isoform_enrich_in_wt = mut_isoform_enrich_in_wt+1 #enriched isoforms should not be the abundant isoforms in WT (<30%)
+        gene_status[[ge]] = "mut_isoform_enrich_in_wt"
+      }else{
+        gene_meta$enrich_status[gene_meta$tr_id==tp_mut$tr_id] = "enriched_in_mut"
+        gene_meta$enrich_status[gene_meta$tr_id==gene_meta_tmp$tr_id[gene_meta_tmp$rank_wt==1] ] = "enriched_in_wt"
+        
+      }
+    }
+  }
+}
+
+gene_meta_sel = gene_meta[!is.na(gene_meta$enrich_status),]
+table(unlist(gene_status))
+```
+
+
+
+```{r}
+gs_test_res_neg= read.csv(text = "Gene Set Name	# Genes in Gene Set (K)	Description	# Genes in Overlap (k)	k/K	p-value	FDR q-value
+REACTOME_METABOLISM_OF_RNA	672	Metabolism of RNA	21	0.0312	1.29E-17	2.94E-13
+GOCC_RIBONUCLEOPROTEIN_COMPLEX	724	A macromolecular complex that contains both RNA and protein molecules. [GOC:krc, GOC:vesicles]	18	0.0249	1.66E-13	1.89E-9
+GOBP_MRNA_METABOLIC_PROCESS	879	The chemical reactions and pathways involving mRNA, messenger RNA, which is responsible for carrying the coded genetic 'message', transcribed from DNA, to sites of protein assembly at the ribosomes. [ISBN:0198506732]	19	0.0216	3.85E-13	2.93E-9
+GOMF_RNA_BINDING	1938	Interacting selectively and non-covalently with an RNA molecule or a portion thereof. [GOC:jl, GOC:mah]	26	0.0134	6.05E-13	3.45E-9
+GNF2_FBL	146	Neighborhood of FBL	10	0.0685	3.03E-12	1.38E-8
+GOBP_ESTABLISHMENT_OF_PROTEIN_LOCALIZATION	1982	The directed movement of a protein to a specific location. [GOC:bf]	25	0.0126	7.06E-12	2.69E-8
+MORF_NPM1	162	Neighborhood of NPM1	10	0.0617	8.58E-12	2.76E-8
+GOBP_CELLULAR_MACROMOLECULE_CATABOLIC_PROCESS	1200	The chemical reactions and pathways resulting in the breakdown of a macromolecule, any large molecule including proteins, nucleic acids and carbohydrates, as carried out by individual cells. [GOC:jl]	20	0.0167	9.67E-12	2.76E-8
+GCM_NPM1	116	Neighborhood of NPM1	9	0.0776	1.25E-11	3.18E-8
+GNF2_EIF3S6	121	Neighborhood of EIF3S6	9	0.0744	1.84E-11	4.2E-8
+",sep="\t")
+```
+
+
+```{r,fig.width=8,fig.height=5}
+gs_test_res_neg$Gene.Set.Name = factor(gs_test_res_neg$Gene.Set.Name,levels =gs_test_res_neg$Gene.Set.Name[order(gs_test_res_neg$FDR.q.value,decreasing = T)] )
+ggplot(data=gs_test_res_neg,aes(x=Gene.Set.Name,y=-log10(FDR.q.value),fill=-log10(FDR.q.value)))+
+  geom_bar(stat="identity")+
+  guides(fill="none")+
+  theme_classic()+coord_flip()
+ggsave(file.path(fig_dir,"pathway_high_in_relapsed_top50.pdf"))
+```
+
+
+
+
+
+
+
+
+```{r}
+#isoform_sel$chr2_47831203000000$exon_id[! isoform_sel$chr2_47831203000000$exon_id %in% isoform_sel$chr2_47831219776336$exon_id]
+isoform_sel$chr1_47831238598736$exon_id
+isoform_sel$chr1_47831196848208$exon_id
+```
+
+```{r}
+isoform_sel$chrX_47831206823688$exon_id[!(isoform_sel$chrX_47831206823688$exon_id %in% isoform_sel$chrX_47831209649608$exon_id)]
+```
+
+
+```{r}
+public_data_res = read.csv(text = "AP1G2
+SKIV2L
+OAS1
+UCKL1
+APPL2
+PNKP
+GPR108
+PEF1
+SUN1
+CREBZF
+PHKB
+RNPEPL1
+CD72
+CRTC2
+FIG4
+SLC7A7
+PCNX
+COG1
+TCIRG1
+CARD11
+MVP
+GCLC
+NAGK
+CNOT1
+SF3B1
+LRRN2
+DRG2
+PNISR
+CLK2
+GSAP
+NKTR
+JMY
+ZNF91
+UBA7
+EAPP
+KIAA0196
+ABCA6
+GTF2IRD2P1
+GOLGA6L5,RP11-182J1.12
+DLG1
+MAN2A2
+SGSM2
+TBC1D15
+GORASP1
+SNRPN,SNURF
+RECQL
+DMTF1
+KTN1
+FOXRED1
+RTF1
+INPPL1
+MED13
+MAN2A1
+CCDC88B
+PPP6R3
+TUBGCP6
+MZB1
+DIP2A
+VARS2
+NAA16
+TPR
+C7orf43
+ZBED5
+RP11-274B21.1
+SAFB2
+SFSWAP
+MAP3K7
+DYNLL1
+AC159540.1
+NLRC3
+PILRB
+CASD1
+USP15
+HINT2
+HTT
+WRAP73
+STIM1
+ZSWIM8
+EHMT1
+ERGIC3
+PHF8
+DVL2
+NICN1
+SLTM
+NUP214
+UBR4
+ANAPC5
+TCEA2
+RP5-1021I20.4,ZNF410
+PRPF38A
+DIS3L
+GAK
+ANKHD1,ANKHD1-EIF4EBP3
+CHD7
+TNRC6C
+PSTPIP1
+EML3
+HYI
+CDC27
+DOCK10
+TRIP12
+DDHD2
+PLXND1
+SERBP1
+PCNXL3
+SLC25A39
+KIAA1033
+MMS19
+GCC2
+TSPAN33
+MED24
+STK38
+AP5Z1
+KPNA1
+RASGRF1
+MYO15B
+CUL9
+RNF38
+SOAT1
+CTD-2319I12.1
+SHKBP1
+PPP2R5A
+TPP2
+MFN1
+TRRAP
+ANKHD1,ANKHD1-EIF4EBP3
+KDM5D
+BBS2
+VILL
+CDKL1
+METAP1
+TAF1C
+FBXO3
+REC8
+NSMCE4A
+YY1AP1
+RASA2
+ZNF37BP
+DLG1
+NDRG3
+FBXO21
+TP53I11
+YIF1A
+RNF213
+PRKCSH
+CLCN6
+VPS16
+QPCTL
+IMMT
+RAD9A
+SNW1
+IRF5
+GGT7
+ITFG1
+GGT7
+HTT
+SECISBP2
+STRN
+DNAJC3
+SCPEP1
+HECTD4
+KHNYN
+AHSA2
+SMARCE1
+NBPF12
+FCRL5
+GTF2H2B
+EDEM1
+NEK3
+RALGAPB
+TBC1D27
+UBXN2A
+TMEM39B
+SLC35B3
+LINC01480
+CHD1L
+RNH1
+TNRC6B
+LRRC57
+CIAPIN1
+CCAR1
+ZBTB11
+ATOX1
+MBD1
+METAP1
+EP400
+SFSWAP
+ITFG2
+FCER2
+PQBP1
+GSAP
+HLA-F
+RPS6KB2
+NARG2
+DIS3L
+DENND1C
+ERGIC3
+HLA-C
+B3GAT3
+FGR
+SEPT6
+PCK2
+USP15
+C11orf80
+AC003002.6,ZNF548
+MZB1
+OGT
+TTBK2
+COG4
+SNRPN,SNURF
+DLST
+DCAF16
+GUSBP11
+LINC00926
+AP2A2
+HDAC7
+HLA-F
+ITGAE
+TPD52L2
+BRD9
+DDX26B
+TMPO
+UBA1
+CTDSPL2
+TFDP1
+LETMD1
+RBM5
+PHF20L1
+TMEM234
+TMEM214
+CARD8
+TTLL3
+CUTA
+ANKRD11
+EHMT1
+MFSD10
+SNHG6
+CSNK2B,CSNK2B-LY6G5B-1181
+DALRD3
+ABTB1
+APOBEC3G
+UTRN
+SLC4A1AP
+TCEA2
+ANKRD11
+AC125232.1
+MICB
+FCRL1
+FKBP3
+MRGBP
+PTPN18
+MDM4
+GON4L
+SACM1L
+TEP1
+PDCD2
+SP140
+LIMD2
+OXA1L
+SNRPN
+SAAL1
+NDOR1
+LMF2
+STK38
+SYTL1
+SUGP1
+HLA-F
+SNRPN
+RPL7L1
+CNPY2,RP11-977G19.10
+SRSF11
+ATP2A3
+NEK3
+CTD-3214H19.4,STXBP2
+JMJD7,JMJD7-PLA2G4B
+MZB1
+NICN1
+SUGP1
+KNTC1
+FDPS
+TTC31
+BAIAP3
+FAM13A-AS1
+RALGPS1
+TMC8
+GPS2,RP11-542C16.2
+MICAL1
+ZRANB2
+GTF2H2B
+COASY
+ANKZF1
+AP1G2
+ZBED5
+SLC12A6
+CCDC84
+FBXL6
+PARP14
+AC093616.4
+ADAR
+MRPS21
+RBM25
+OS9
+MZB1
+TMBIM4
+",header=F)
+```
+
+
+```{r}
+public_data_res = public_data_res$V1
+table(tt1$gene_name %in% public_data_res)
+
+table(tt1$gene_name[tt1$FDR<0.05] %in% public_data_res)
+```
+
+```{r}
+limma::barcodeplot(tt1$gene.F,tt1$gene_name %in% public_data_res)
+```
+
+```{r}
+idx <- ids2indices(public_data_res,id=(allcounts$genes$gene_name))
+camera(allcounts,index=idx)
+```
+
+
+
+```{r}
+sampleID_annotation$smp_id_lr = smp_convert_table[match(sampleID_annotation$sample_id,names(smp_convert_table))]
+sampleID_annotation$SF3B1_mut = "WT"
+sampleID_annotation$SF3B1_mut[sampleID_annotation$smp_id_lr %in% c("cll153","cll155","cll156","cll5306","cll318")] = "Mut"
+sampleID_annotation$comb_label = paste(sampleID_annotation$CLL_status,sampleID_annotation$SF3B1_mut,sep="-")
+sampleID_annotation$comb_label[sampleID_annotation$SF3B1_mut=="Mut"] = paste(sampleID_annotation$patient_id,sampleID_annotation$CLL_status,sep="-")[sampleID_annotation$SF3B1_mut=="Mut"]
+```
+
+
+```{r,fig.width=6,fig.height=6}
+merged_sce$sample_id = names(smp_convert_table[match(colnames(merged_sce), smp_convert_table)])
+merged_sce$condition = sampleID_annotation$CLL_status[match(merged_sce$sample_id,sampleID_annotation$sample_id)]
+cond_group = paste(merged_sce$group,merged_sce$condition )
+sel_cnt = assay(merged_sce,"sum")
+sel_cnt = sel_cnt[gene_meta_sel$tr_id[gene_meta_sel$enrich_status=="enriched_in_mut"],]
+#sel_cnt = aggregateAcrossCells()
+grp = sampleID_annotation$comb_label[match(colnames(sel_cnt),sampleID_annotation$smp_id_lr)]
+sel_cnt = t(rowsum(t(sel_cnt),grp))
+
+col_anno = data.frame(row.names = colnames(sel_cnt),condition=sampleID_annotation$CLL_status[match(colnames(sel_cnt),sampleID_annotation$comb_label)],
+                      sf3b1_mut=sampleID_annotation$SF3B1_mut[match(colnames(sel_cnt),sampleID_annotation$comb_label)] )
+sel_cnt = sel_cnt[rowSums(sel_cnt)<50000,]
+sel_cnt = log2(sel_cnt+1)
+sel_cnt[sel_cnt>10] = 10
+pheatmap::pheatmap(sel_cnt,scale="none",border_color=NA,
+                   labels_row=gene_meta_sel$gene_name[match(rownames(sel_cnt),gene_meta_sel$tr_id)],show_rownames = F,
+                   annotation_col = col_anno,cluster_cols = F,treeheight_row = 0,filename = file.path(fig_dir,"heatmap_sf3b1_DTU.pdf"),width = 4,height = 5)
+
+pheatmap::pheatmap(sel_cnt,scale="none",border_color=NA,
+                   labels_row=gene_meta_sel$gene_name[match(rownames(sel_cnt),gene_meta_sel$tr_id)],show_rownames = T,
+                   annotation_col = col_anno,cluster_cols = T,treeheight_col = 0,treeheight_row = 0,filename = file.path(fig_dir,"heatmap_sf3b1_DTU_l.pdf"),width = 6,height = 16)
+```
+
+
+```{r,fig.width=6,fig.height=6}
+merged_sce_mut$sample_id = names(smp_convert_table[match(colnames(merged_sce_mut), smp_convert_table)])
+merged_sce_mut$condition = sampleID_annotation$CLL_status[match(merged_sce_mut$sample_id,sampleID_annotation$sample_id)]
+#cond_group = paste(merged_sce_mut$group,merged_sce_mut$condition )
+sel_cnt = assay(merged_sce_mut,"sum")
+sel_cnt = sel_cnt[tmp_mut_tt$tr_id,]
+#sel_cnt = aggregateAcrossCells()
+grp = sampleID_annotation$comb_label[match(colnames(sel_cnt),sampleID_annotation$smp_id_lr)]
+sel_cnt = t(rowsum(t(sel_cnt),grp))
+
+col_anno = data.frame(row.names = colnames(sel_cnt),condition=sampleID_annotation$CLL_status[match(colnames(sel_cnt),sampleID_annotation$comb_label)],
+                      sf3b1_mut=sampleID_annotation$SF3B1_mut[match(colnames(sel_cnt),sampleID_annotation$comb_label)] )
+sel_cnt = sel_cnt[rowSums(sel_cnt)<50000,]
+sel_cnt = log2(sel_cnt+1)
+sel_cnt[sel_cnt>10] = 10
+pheatmap::pheatmap(sel_cnt,scale="none",border_color=NA,
+                   labels_row=tmp_mut_tt$gene_name[match(rownames(sel_cnt),tmp_mut_tt$tr_id)],show_rownames = F,
+                   annotation_col = col_anno,cluster_cols = F,treeheight_row = 0,filename = file.path(fig_dir,"heatmap_sf3b1_mut_DTU.pdf"),width = 4,height = 5)
+
+pheatmap::pheatmap(sel_cnt,scale="none",border_color=NA,
+                   labels_row=tmp_mut_tt$gene_name[match(rownames(sel_cnt),tmp_mut_tt$tr_id)],show_rownames = T,
+                   annotation_col = col_anno,cluster_cols = F,treeheight_row = 0,filename = file.path(fig_dir,"heatmap_sf3b1_mut_DTU_l.pdf"),width = 6,height = 8)
+```
+
+
+```{r}
+sel_ge = "TPT1"
+pri_isoform="chr13_47831201496744"
+mut_isoform="chr13_47831211093672"
+tmp = assay(merged_sce,"sum")[rowData(merged_sce)$gene_name ==sel_ge,]
+grp = sampleID_annotation$comb_label[match(colnames(tmp),sampleID_annotation$smp_id_lr)]
+tmp = rowsum(t(tmp),grp)
+tr_grp = colnames(tmp)
+tr_grp[tr_grp==pri_isoform]="primary_isoform"
+tr_grp[tr_grp==mut_isoform]="mut_isoform"
+tr_grp[tr_grp!=c("primary_isoform","mut_isoform")]="others"
+
+tmp = rowsum(t(tmp),tr_grp)
+tmp = t(t(tmp)/colSums(tmp))
+tmp = as.data.frame(tmp)
+tmp$tr_id = rownames(tmp)
+tmp = tmp %>% pivot_longer(!tr_id)
+```
+
+
+
+```{r,fig.width=8,fig.height=4.5}
+ggplot(data=tmp,aes(x=name,y=value,fill=tr_id))+
+  geom_bar(stat="identity",alpha=0.9)+
+  theme_classic()+
+  labs(x=NULL,y="Proportions",fill=NULL)+
+  theme(axis.text.x = element_text(angle=45,hjust=1))
+ggsave(file.path(fig_dir,"TPT1_barplot_sf3b1_mut.pdf"),width = 4.5,height = 3)
+```
+
+
+```{r}
+#sel_tr = rownames(merged_sce)[rowData(merged_sce)$gene_name ==sel_ge]
+sel_tr = c(pri_isoform,mut_isoform)
+isoform_sel = isoform_gff[isoform_gff$transcript_id %in% sel_tr,]
+isoform_sel$grp = "primary_isoform"
+isoform_sel$grp[isoform_sel$transcript_id==mut_isoform] = "mut_isoform"
+isoform_sel <- split(isoform_sel, isoform_sel$transcript_id)
+g = ggplot(isoform_sel) + 
+  geom_alignment(label = FALSE,aes(fill = grp))+
+  scale_fill_manual(values = c("#F8766D","#619CFF"))+
+  theme_bw()+theme(legend.position = "none",panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+                   panel.background = element_blank(), axis.line = element_line(colour = "black"))
+g
+ggsave(file.path(fig_dir,"TPT1_isoforms_sf3b1_mut.pdf"),width = 4.5,height = 1.5)
+```
+
+
+

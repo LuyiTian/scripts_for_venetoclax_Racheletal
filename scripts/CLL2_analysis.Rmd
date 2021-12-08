@@ -1,0 +1,402 @@
+---
+title: "CLL2 ibrtunib analysis"
+output: html_notebook
+---
+
+
+```{r}
+library(Seurat)
+library(SeuratWrappers)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(RColorBrewer)
+
+fig_dir = file.path("figs","CLL141i_plot")
+dir.create(fig_dir)
+
+```
+
+```{r}
+srt = readRDS(file = "data/srt_cll_all.Rds")
+srt = srt[,!(srt$seurat_clusters == 15)]
+
+getPalette = colorRampPalette(brewer.pal(9, "Set1"))
+clu_colors = getPalette( length(unique(Idents(srt))) )
+names(clu_colors) = levels(Idents(srt))
+```
+
+
+```{r}
+srt_sel = srt[,srt$sample_id %in% c("CLL141i")]
+DimPlot(srt_sel)
+```
+
+
+```{r}
+srt2 = srt[,srt$patient_id %in% c( "CLL2" )]
+srt2 <- RunFastMNN(object.list = SplitObject(srt2,split.by = "sample_id"),
+                    verbose = F )
+srt2 <- RunUMAP(srt2, reduction = "mnn", dims = 1:30)
+srt2 <- FindNeighbors(srt2, reduction = "mnn", dims = 1:30)
+srt2 <- FindClusters(srt2,resolution = 0.6)
+DimPlot(srt2,label=T,split.by = "condition")
+```
+
+
+
+```{r}
+srt_sel = FindVariableFeatures(srt_sel,nfeatures = 3000,verbose = F)
+srt_sel = ScaleData(srt_sel,verbose = F)
+srt_sel = RunPCA(srt_sel,verbose = F)
+srt_sel = FindNeighbors(srt_sel,dims=1:30,verbose = F)
+srt_sel = RunUMAP(srt_sel,dims = 1:30,verbose = F)
+srt_sel = FindClusters(srt_sel, dims=1:30,verbose = F)
+```
+
+```{r}
+srt_sel = srt_sel[,!srt_sel$seurat_clusters %in% c(9,11)]
+```
+
+
+```{r}
+co = colorRampPalette( ggsci::pal_npg()(10))(length(unique(srt_sel$seurat_clusters)))
+DimPlot(srt_sel,cols = co,label=F)+theme_void()+theme(legend.position = "none")
+ggsave(file.path(fig_dir,"umap_clusters.pdf"),width = 3,height = 3)
+```
+
+```{r}
+VlnPlot(srt_sel,features = c("nCount_RNA","nFeature_RNA","nCount_ADT"))
+```
+
+
+```{r}
+srt.marker = FindAllMarkers(srt_sel)
+```
+
+
+```{r,fig.width=5,fig.height=9}
+top10 <- srt.marker[srt.marker$p_val_adj<0.01,] %>% group_by(cluster) %>% top_n(n = 30, wt = -p_val_adj) # %>%  top_n(n = 5, wt = avg_logFC)
+top10 = top10 %>% group_by(gene) %>% top_n(n=1,wt=avg_log2FC)
+top10 = top10 %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC)
+
+DotPlot(srt_sel,features = unique(top10$gene),cluster.idents=F )+coord_flip()+labs(x=NULL,y=NULL)
+```
+
+```{r}
+
+```
+
+
+```{r}
+tmp_cor = cor(t(as.matrix(srt_sel@assays$RNA@data[c("BCL2A1","BCL2L1","BCL2","MCL1"),])),t(as.matrix(srt_sel@assays$RNA@data)) )
+
+summ_gene = c(colnames(tmp_cor)[order(tmp_cor[1,],decreasing = T)[1:10]],
+              colnames(tmp_cor)[order(tmp_cor[2,],decreasing = T)[1:10]],
+              colnames(tmp_cor)[order(tmp_cor[3,],decreasing = T)[1:10]],
+              colnames(tmp_cor)[order(tmp_cor[4,],decreasing = T)[1:10]])
+summ_gene = unique(summ_gene)
+summ_gene = summ_gene[!(summ_gene %in% c("BCL2A1","BCL2L1","BCL2","MCL1"))]
+
+tmp_cor_sel = tmp_cor[,summ_gene]
+```
+
+
+```{r}
+pheatmap::pheatmap( tmp_cor_sel,main="CLL141i",treeheight_row = 0,treeheight_col = 0)
+```
+
+
+```{r}
+tmp_cor = cor(t(as.matrix(srt2@assays$RNA@data[c("BCL2A1","BCL2L1","BCL2","MCL1"),srt2$sample_id=="CLL141"])),t(as.matrix(srt2@assays$RNA@data[,srt2$sample_id=="CLL141"])) )
+
+summ_gene = c(colnames(tmp_cor)[order(tmp_cor[1,],decreasing = T)[1:10]],
+              colnames(tmp_cor)[order(tmp_cor[2,],decreasing = T)[1:10]],
+              colnames(tmp_cor)[order(tmp_cor[3,],decreasing = T)[1:10]],
+              colnames(tmp_cor)[order(tmp_cor[4,],decreasing = T)[1:10]])
+summ_gene = unique(summ_gene)
+summ_gene = summ_gene[!(summ_gene %in% c("BCL2A1","BCL2L1","BCL2","MCL1"))]
+
+tmp_cor_sel = tmp_cor[,summ_gene]
+```
+
+
+```{r}
+pheatmap::pheatmap( tmp_cor_sel,main="CLL141",treeheight_row = 0,treeheight_col = 0)
+```
+
+
+```{r}
+p1 = FeaturePlot(srt_sel,features = c("BCL2L1"),cols = c("grey90","#B91035"),order=T,max.cutoff = "q99")+theme_void()
+p2 = FeaturePlot(srt_sel,features = c("BCL2A1"),cols = c("grey90","#B91035"),order=T,max.cutoff = "q99")+theme_void()
+ggsave(file.path(fig_dir,"umap_BCLxL_A1_expr.pdf"),plot = ggarrange(p1,p2,ncol=2,nrow=1),width =5.2,height = 2.5)
+
+p1 = FeaturePlot(srt_sel,features = c("JUN"),cols = c("grey90","#B91035"),order=T,max.cutoff = "q99")+theme_void()
+p2 = FeaturePlot(srt_sel,features = c("FOS"),cols = c("grey90","#B91035"),order=T,max.cutoff = "q99")+theme_void()
+ggsave(file.path(fig_dir,"umap_FosJun_expr.pdf"),plot = ggarrange(p1,p2,ncol=2,nrow=1),width =5.2,height = 2.5)
+
+
+p1 = FeaturePlot(srt_sel,features = c("JCHAIN"),cols = c("grey90","#B91035"),order=T,max.cutoff = "q99")+theme_void()
+p2 = FeaturePlot(srt_sel,features = c("CACNB2"),cols = c("grey90","#B91035"),order=T,max.cutoff = "q99")+theme_void()
+ggsave(file.path(fig_dir,"umap_JCHAIN_CACNB2_expr.pdf"),plot = ggarrange(p1,p2,ncol=2,nrow=1),width =5.2,height = 2.5)
+
+```
+
+```{r}
+FeaturePlot(srt_sel,features = c("JUN","FOS"),order=T,max.cutoff = "q97")
+```
+
+
+```{r}
+rachseq_sce = readRDS(file = "data/rachseq_mut_sce.Rds")
+fltseq_sce = readRDS(file="data/fltseq_known_mut_sce.Rds")
+```
+
+
+```{r}
+BCL2_mut_cells = colnames(rachseq_sce)[counts(rachseq_sce)["chr18_63318364_C_A",]>0]
+BCL2_mut_cells = c(BCL2_mut_cells,
+                   colnames(fltseq_sce)[counts(fltseq_sce)["chr18_63318364_C_A_BCL2",]>0])
+```
+
+
+```{r}
+srt_sel$BCL2_mut = "No"
+srt_sel$BCL2_mut[colnames(srt_sel) %in% BCL2_mut_cells] = "Yes"
+
+
+srt2$BCL2_mut = "No"
+srt2$BCL2_mut[colnames(srt2) %in% BCL2_mut_cells] = "Yes"
+```
+
+```{r}
+DimPlot(srt2,group.by = "BCL2_mut",order = T,pt.size = 0.6)
+```
+
+
+
+```{r}
+DimPlot(srt_sel,group.by = "BCL2_mut",order = T,pt.size = 0.6)
+```
+
+```{r}
+plot_df = data.frame(x=srt_sel@reductions$umap@cell.embeddings[,1],
+                     y=srt_sel@reductions$umap@cell.embeddings[,2],
+                     co=srt_sel$BCL2_mut)
+plot_df = plot_df[order(plot_df$co),]
+ggplot(data=plot_df,aes(x=x,y=y,col=co,size=co))+
+  geom_point(alpha=0.6)+
+  scale_color_manual(values = c("No"="grey70","Yes"="black") )+
+  scale_size_manual(values = c("No"=1,"Yes"=3))+
+  labs(title="BCL2 G101V mutation")+
+  theme_void()+
+  theme(legend.position = "none")
+ggsave(file.path(fig_dir,"umap_bcl2_mut.pdf"),width = 3,height = 3)
+```
+
+
+```{r}
+get_barcode_seq = function(meta_df){
+  cell_bc = rownames(meta_df)
+  #cell_bc = sapply(strsplit(cell_bc,split="_"),function(x){x[2]})
+  cell_bc = sapply(strsplit(cell_bc,split="-"),function(x){x[2]})
+  return(cell_bc)
+}
+
+meta_df = srt_sel@meta.data
+
+meta_df$barcode_seq = get_barcode_seq(meta_df)
+meta_df$lib_batch = sapply(strsplit(meta_df$Sample,split="_"),function(x){x[2]})
+
+
+```
+
+
+```{r}
+smp_id='cll141'
+c_smp_id="CLL141i"
+
+  tr_id_table_sel = transcript_id_table[transcript_id_table$sample_id==smp_id,]
+
+  data_dir=paste0("/stornext/Genomics/data/CLL_venetoclax/RaCHseq/",smp_id,"/",smp_id,"_isoform_outs")
+  
+  transcript_count <- read.csv(file.path(data_dir,"transcript_count.csv.gz"), stringsAsFactors=FALSE)
+  if (smp_id=="cll30352"){
+        meta_df_sel = meta_df[meta_df$sample_id == c_smp_id & meta_df$lib_batch=="lib20",]
+  }else{
+        meta_df_sel = meta_df[meta_df$sample_id == c_smp_id & meta_df$lib_batch=="lib80",]
+  }
+
+  tr_sce = SingleCellExperiment(assays=list(counts=as.matrix(transcript_count[,-c(1,2)]) ))
+  rownames(tr_sce) = transcript_count$transcript_id
+  rowData(tr_sce)$gene_id = transcript_count$gene_id
+  tr_sce = addPerCellQC(tr_sce)
+  tr_sce = addPerFeatureQC(tr_sce)
+  keep.hi <- isOutlier(tr_sce$sum, type="higher", log=TRUE)
+  keep.low <- isOutlier(tr_sce$sum, type="lower", log=TRUE)
+  tr_sce = tr_sce[,(!keep.hi) & (!keep.low)]
+  tr_sce = tr_sce[rowSums(counts(tr_sce))>Min_tr_cnt,]
+  print(table(colnames(tr_sce) %in% meta_df_sel$barcode_seq))
+  print(table(meta_df_sel$barcode_seq %in% colnames(tr_sce)))
+  tr_sce = tr_sce[,colnames(tr_sce) %in% meta_df_sel$barcode_seq]
+  meta_df_sel = meta_df_sel[match(colnames(tr_sce),meta_df_sel$barcode_seq),]
+  tr_sce = tr_sce[rownames(tr_sce) %in% tr_id_table_sel$raw_tr_id,]
+  colnames(tr_sce) = rownames(meta_df_sel)
+  rowData(tr_sce)$u_trid = tr_id_table_sel$joint_tr_id[match(rownames(tr_sce),tr_id_table_sel$raw_tr_id)]
+  #tr_sce = tr_sce[rowData(tr_sce)$gene_id %in% sel_mk_gene]
+  joint_tr_cnt = sumCountsAcrossCells(t(counts(tr_sce)),rowData(tr_sce)$u_trid)
+  tr_m_new = SingleCellExperiment(assays=SimpleList(counts=t(assay(joint_tr_cnt,"sum"))) )
+  row_mt = as.data.frame(rowData(tr_sce))
+  row_mt$joint_tr_id = tr_id_table_sel$joint_tr_id[match(rownames(row_mt),tr_id_table_sel$raw_tr_id)]
+
+  rowData(tr_m_new)$gene_id = row_mt$gene_id[match(rownames(tr_m_new), row_mt$joint_tr_id)]
+  tr_m_new$sample_id=c_smp_id
+  tr_m_new_rachseq = tr_m_new
+```
+
+
+```{r}
+transcript_id_table <- read.delim("/stornext/Genomics/data/CLL_venetoclax/FLTseq/gff_comp/transcript_id_table.csv", sep=",",header=T)
+
+  tr_id_table_sel = transcript_id_table[transcript_id_table$sample_id==smp_id,]
+
+    data_dir=paste0("/stornext/Genomics/data/CLL_venetoclax/FLTseq/",smp_id,"/",smp_id,"_isoform_outs")
+  
+  transcript_count <- read.csv(file.path(data_dir,"transcript_count.csv.gz"), stringsAsFactors=FALSE)
+    meta_df_sel = meta_df[meta_df$sample_id == c_smp_id & meta_df$lib_batch=="lib20",]
+  
+  tr_sce = SingleCellExperiment(assays=list(counts=as.matrix(transcript_count[,-c(1,2)]) ))
+  rownames(tr_sce) = transcript_count$transcript_id
+  rowData(tr_sce)$gene_id = transcript_count$gene_id
+  tr_sce = addPerCellQC(tr_sce)
+  tr_sce = addPerFeatureQC(tr_sce)
+  keep.hi <- isOutlier(tr_sce$sum, type="higher", log=TRUE)
+  keep.low <- isOutlier(tr_sce$sum, type="lower", log=TRUE)
+  tr_sce = tr_sce[,(!keep.hi) & (!keep.low)]
+  tr_sce = tr_sce[rowSums(counts(tr_sce))>Min_tr_cnt,]
+  print(table(colnames(tr_sce) %in% meta_df_sel$barcode_seq))
+  print(table(meta_df_sel$barcode_seq %in% colnames(tr_sce)))
+  tr_sce = tr_sce[,colnames(tr_sce) %in% meta_df_sel$barcode_seq]
+  meta_df_sel = meta_df_sel[match(colnames(tr_sce),meta_df_sel$barcode_seq),]
+  tr_sce = tr_sce[rownames(tr_sce) %in% tr_id_table_sel$raw_tr_id,]
+  colnames(tr_sce) = rownames(meta_df_sel)
+  rowData(tr_sce)$u_trid = tr_id_table_sel$joint_tr_id[match(rownames(tr_sce),tr_id_table_sel$raw_tr_id)]
+  #tr_sce = tr_sce[rowData(tr_sce)$gene_id %in% sel_mk_gene]
+  joint_tr_cnt = sumCountsAcrossCells(t(counts(tr_sce)),rowData(tr_sce)$u_trid)
+  tr_m_new = SingleCellExperiment(assays=SimpleList(counts=t(assay(joint_tr_cnt,"sum"))) )
+  row_mt = as.data.frame(rowData(tr_sce))
+  row_mt$joint_tr_id = tr_id_table_sel$joint_tr_id[match(rownames(row_mt),tr_id_table_sel$raw_tr_id)]
+
+  rowData(tr_m_new)$gene_id = row_mt$gene_id[match(rownames(tr_m_new), row_mt$joint_tr_id)]
+  tr_m_new$sample_id=c_smp_id
+  
+```
+
+
+```{r}
+isoform_gff = import("/stornext/Genomics/data/CLL_venetoclax/FLTseq/gff_comp/combined_transcripts.gff3")
+isoform_gff$Parent = as.character(isoform_gff$Parent)
+isoform_gff$transcript_id= unlist(lapply(strsplit(isoform_gff$Parent, split = ":"),function(x){x[2]}))
+```
+
+```{r}
+sel_ge = "ENSG00000141682"
+sel_tr = rownames(tr_m_new)[grepl(sel_ge,rowData(tr_m_new)$gene_id)]
+isoform_sel = isoform_gff[isoform_gff$transcript_id %in% sel_tr,]
+isoform_sel <- split(isoform_sel, isoform_sel$transcript_id)
+g = ggplot(isoform_sel) + 
+  geom_alignment(label = TRUE)+
+  theme_bw()+theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+                   panel.background = element_blank(), axis.line = element_line(colour = "black"))
+g
+ggsave(file.path(fig_dir,"noxa_isoform_raw.pdf"))
+```
+
+```{r}
+row_mt[row_mt$gene_id=="ENSG00000141682.11",]
+```
+
+
+```{r}
+tmp_cnt = counts(tr_m_new)[c("chr18_47831390954168","chr18_47831203003064"),]
+tmp_cnt = tmp_cnt[,colSums(tmp_cnt)>2]
+tmp_pct = t(t(tmp_cnt)/colSums(tmp_cnt))
+mut_cells = colnames(tmp_pct)[tmp_pct["chr18_47831390954168",]>0.5]
+```
+
+```{r}
+tmp_cnt = counts(tr_m_new_rachseq)[c("chr18_47831390954168","chr18_47831203003064"),]
+tmp_cnt = tmp_cnt[,colSums(tmp_cnt)>3]
+tmp_pct = t(t(tmp_cnt)/colSums(tmp_cnt))
+mut_cells1 = colnames(tmp_pct)[tmp_pct["chr18_47831390954168",]>0.5]
+```
+
+
+```{r}
+srt_sel$noxa_mut = "No"
+srt_sel$noxa_mut[colnames(srt_sel) %in% c(mut_cells,mut_cells1)] = "Yes"
+```
+
+```{r}
+srt2$noxa_mut = "No"
+srt2$noxa_mut[colnames(srt2) %in% c(mut_cells,mut_cells1)] = "Yes"
+```
+
+
+```{r}
+DimPlot(srt_sel,group.by = "noxa_mut",order = T,pt.size = 0.6)
+```
+
+```{r}
+DimPlot(srt2,group.by = "noxa_mut",order = T,pt.size = 0.6)
+```
+
+
+```{r}
+plot_df = data.frame(x=srt_sel@reductions$umap@cell.embeddings[,1],
+                     y=srt_sel@reductions$umap@cell.embeddings[,2],
+                     co=srt_sel$noxa_mut)
+plot_df = plot_df[order(plot_df$co),]
+ggplot(data=plot_df,aes(x=x,y=y,col=co,size=co))+
+  geom_point(alpha=0.6)+
+  scale_color_manual(values = c("No"="grey70","Yes"="black") )+
+  scale_size_manual(values = c("No"=1,"Yes"=3))+
+  labs(title="noxa indel")+
+  theme_void()+
+  theme(legend.position = "none")
+ggsave(file.path(fig_dir,"umap_noxa_mut.pdf"),width = 3,height = 3)
+```
+
+
+```{r}
+top10 <- srt.marker[srt.marker$p_val_adj<0.01,] %>% group_by(cluster) %>% top_n(n = 50, wt = -p_val_adj) # %>%  top_n(n = 5, wt = avg_logFC)
+top10 = top10 %>% group_by(gene) %>% top_n(n=1,wt=avg_log2FC)
+top10 = top10 %>% group_by(cluster) %>% top_n(n = 30, wt = avg_log2FC)
+
+top10[top10$cluster==4,]
+```
+
+
+
+```{r}
+M5890 <- read.table("/stornext/General/data/user_managed/grpu_mritchie_1/LuyiTian/Rachel_CLL_analysis/figs/CLL_plot/csvs/M5890.txt", quote="\"", skip=2)
+
+srt_sel <- AddModuleScore(
+  object = srt_sel,
+  features = list(M5890$V1),
+  ctrl = 100,
+  name = 'NFKB_genes'
+)
+```
+
+```{r}
+FeaturePlot(srt_sel,features = c("NFKB_genes1"),order=T,max.cutoff = "q99")
+ggsave(file.path(fig_dir,"umap_NFKB.pdf"),width = 3,height = 2.5)
+```
+
+
+```{r}
+VlnPlot(srt_sel,"NFKB_genes1",pt.size = 0)+labs(title="Genes regulated by NF-kB in response to TNF",y="gene enrichment score",x=NULL)
+```
+
+

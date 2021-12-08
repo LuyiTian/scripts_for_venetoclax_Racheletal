@@ -1,0 +1,674 @@
+---
+title: "CLL6 Bax analysis"
+output: html_notebook
+---
+
+
+```{r}
+library(Seurat)
+library(SeuratWrappers)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(RColorBrewer)
+library(scran)
+fig_dir = file.path("figs","CLL6_plot")
+dir.create(fig_dir)
+
+```
+
+
+
+```{r}
+srt = readRDS(file = "data/srt_cll_all.Rds")
+srt = srt[,!(srt$seurat_clusters == 15)]
+
+getPalette = colorRampPalette(brewer.pal(9, "Set1"))
+clu_colors = getPalette( length(unique(Idents(srt))) )
+names(clu_colors) = levels(Idents(srt))
+```
+
+```{r}
+srt_175 = srt[,srt$sample_id %in% c( "CLL175" )]
+srt_175 = FindVariableFeatures(srt_175,nfeatures = 2000,verbose = F)
+srt_175 = ScaleData(srt_175,verbose = F)
+srt_175 = RunPCA(srt_175,verbose = F)
+srt_175 = FindNeighbors(srt_175,dims=1:20,verbose = F)
+srt_175 = RunUMAP(srt_175,dims = 1:20,verbose = F)
+srt_175 = FindClusters(srt_175, dims=1:20,verbose = F)
+```
+
+```{r}
+srt_175 = srt_175[,!(srt_175$seurat_clusters %in% c(6,9))]
+```
+
+```{r}
+co = colorRampPalette( ggsci::pal_npg()(10))(length(unique(srt_175$seurat_clusters)))
+DimPlot(srt_175,cols = co,label=F)+theme_void()+theme(legend.position = "none")
+ggsave(file.path(fig_dir,"umap_clusters.pdf"),width = 3,height = 3)
+```
+
+```{r}
+DimPlot(srt_175)
+```
+
+```{r}
+FeaturePlot(srt_175,"MCL1",max.cutoff = "q98")
+```
+
+
+```{r}
+srt2 = srt[,srt$patient_id %in% c( "CLL6" )]
+srt2 <- RunFastMNN(object.list = SplitObject(srt2,split.by = "sample_id"),
+                    verbose = F )
+srt2 <- RunUMAP(srt2, reduction = "mnn", dims = 1:30)
+srt2 <- FindNeighbors(srt2, reduction = "mnn", dims = 1:30)
+srt2 <- FindClusters(srt2,resolution = 0.6)
+DimPlot(srt2,label=T,split.by = "condition")
+```
+
+```{r}
+FeaturePlot(srt2,"MCL1",max.cutoff = "q98")
+```
+
+
+```{r}
+#srt_sel = srt2
+srt_sel = srt_175
+```
+
+
+
+
+```{r}
+get_barcode_seq = function(meta_df){
+  cell_bc = rownames(meta_df)
+  #cell_bc = sapply(strsplit(cell_bc,split="_"),function(x){x[2]})
+  cell_bc = sapply(strsplit(cell_bc,split="-"),function(x){x[2]})
+  return(cell_bc)
+}
+
+meta_df = srt_sel@meta.data
+
+meta_df$barcode_seq = get_barcode_seq(meta_df)
+meta_df$lib_batch = sapply(strsplit(meta_df$Sample,split="_"),function(x){x[2]})
+
+
+```
+
+
+```{r}
+smp_id='cll175'
+c_smp_id="CLL175"
+Min_tr_cnt = 10
+transcript_id_table <- read.delim("/stornext/Genomics/data/CLL_venetoclax/FLTseq/gff_comp/transcript_id_table.csv", sep=",",header=T)
+  tr_id_table_sel = transcript_id_table[transcript_id_table$sample_id==smp_id,]
+
+  data_dir=paste0("/stornext/Genomics/data/CLL_venetoclax/RaCHseq/",smp_id,"/",smp_id,"_isoform_outs")
+  
+  transcript_count <- read.csv(file.path(data_dir,"transcript_count.csv.gz"), stringsAsFactors=FALSE)
+  if (smp_id=="cll30352"){
+        meta_df_sel = meta_df[meta_df$sample_id == c_smp_id & meta_df$lib_batch=="lib20",]
+  }else{
+        meta_df_sel = meta_df[meta_df$sample_id == c_smp_id & meta_df$lib_batch=="lib80",]
+  }
+
+  tr_sce = SingleCellExperiment(assays=list(counts=as.matrix(transcript_count[,-c(1,2)]) ))
+  rownames(tr_sce) = transcript_count$transcript_id
+  rowData(tr_sce)$gene_id = transcript_count$gene_id
+  tr_sce = addPerCellQC(tr_sce)
+  tr_sce = addPerFeatureQC(tr_sce)
+  keep.hi <- isOutlier(tr_sce$sum, type="higher", log=TRUE)
+  keep.low <- isOutlier(tr_sce$sum, type="lower", log=TRUE)
+  tr_sce = tr_sce[,(!keep.hi) & (!keep.low)]
+  tr_sce = tr_sce[rowSums(counts(tr_sce))>Min_tr_cnt,]
+  print(table(colnames(tr_sce) %in% meta_df_sel$barcode_seq))
+  print(table(meta_df_sel$barcode_seq %in% colnames(tr_sce)))
+  tr_sce = tr_sce[,colnames(tr_sce) %in% meta_df_sel$barcode_seq]
+  meta_df_sel = meta_df_sel[match(colnames(tr_sce),meta_df_sel$barcode_seq),]
+  tr_sce = tr_sce[rownames(tr_sce) %in% tr_id_table_sel$raw_tr_id,]
+  colnames(tr_sce) = rownames(meta_df_sel)
+  rowData(tr_sce)$u_trid = tr_id_table_sel$joint_tr_id[match(rownames(tr_sce),tr_id_table_sel$raw_tr_id)]
+  #tr_sce = tr_sce[rowData(tr_sce)$gene_id %in% sel_mk_gene]
+  joint_tr_cnt = sumCountsAcrossCells(t(counts(tr_sce)),rowData(tr_sce)$u_trid)
+  tr_m_new = SingleCellExperiment(assays=SimpleList(counts=t(assay(joint_tr_cnt,"sum"))) )
+  row_mt = as.data.frame(rowData(tr_sce))
+  row_mt$joint_tr_id = tr_id_table_sel$joint_tr_id[match(rownames(row_mt),tr_id_table_sel$raw_tr_id)]
+
+  rowData(tr_m_new)$gene_id = row_mt$gene_id[match(rownames(tr_m_new), row_mt$joint_tr_id)]
+  tr_m_new$sample_id=c_smp_id
+  tr_m_new_rachseq = tr_m_new
+```
+
+```{r}
+
+  tr_id_table_sel = transcript_id_table[transcript_id_table$sample_id==smp_id,]
+
+    data_dir=paste0("/stornext/Genomics/data/CLL_venetoclax/FLTseq/",smp_id,"/",smp_id,"_isoform_outs")
+  
+  transcript_count <- read.csv(file.path(data_dir,"transcript_count.csv.gz"), stringsAsFactors=FALSE)
+    meta_df_sel = meta_df[meta_df$sample_id == c_smp_id & meta_df$lib_batch=="lib20",]
+  
+  tr_sce = SingleCellExperiment(assays=list(counts=as.matrix(transcript_count[,-c(1,2)]) ))
+  rownames(tr_sce) = transcript_count$transcript_id
+  rowData(tr_sce)$gene_id = transcript_count$gene_id
+  tr_sce = addPerCellQC(tr_sce)
+  tr_sce = addPerFeatureQC(tr_sce)
+  keep.hi <- isOutlier(tr_sce$sum, type="higher", log=TRUE)
+  keep.low <- isOutlier(tr_sce$sum, type="lower", log=TRUE)
+  tr_sce = tr_sce[,(!keep.hi) & (!keep.low)]
+  tr_sce = tr_sce[rowSums(counts(tr_sce))>Min_tr_cnt,]
+  print(table(colnames(tr_sce) %in% meta_df_sel$barcode_seq))
+  print(table(meta_df_sel$barcode_seq %in% colnames(tr_sce)))
+  tr_sce = tr_sce[,colnames(tr_sce) %in% meta_df_sel$barcode_seq]
+  meta_df_sel = meta_df_sel[match(colnames(tr_sce),meta_df_sel$barcode_seq),]
+  tr_sce = tr_sce[rownames(tr_sce) %in% tr_id_table_sel$raw_tr_id,]
+  colnames(tr_sce) = rownames(meta_df_sel)
+  rowData(tr_sce)$u_trid = tr_id_table_sel$joint_tr_id[match(rownames(tr_sce),tr_id_table_sel$raw_tr_id)]
+  #tr_sce = tr_sce[rowData(tr_sce)$gene_id %in% sel_mk_gene]
+  joint_tr_cnt = sumCountsAcrossCells(t(counts(tr_sce)),rowData(tr_sce)$u_trid)
+  tr_m_new = SingleCellExperiment(assays=SimpleList(counts=t(assay(joint_tr_cnt,"sum"))) )
+  row_mt = as.data.frame(rowData(tr_sce))
+  row_mt$joint_tr_id = tr_id_table_sel$joint_tr_id[match(rownames(row_mt),tr_id_table_sel$raw_tr_id)]
+
+  rowData(tr_m_new)$gene_id = row_mt$gene_id[match(rownames(tr_m_new), row_mt$joint_tr_id)]
+  tr_m_new$sample_id=c_smp_id
+  
+```
+
+```{r}
+library(rtracklayer)
+library(ggbio)
+```
+
+
+```{r}
+isoform_gff = import("/stornext/Genomics/data/CLL_venetoclax/FLTseq/gff_comp/combined_transcripts.gff3")
+isoform_gff$Parent = as.character(isoform_gff$Parent)
+isoform_gff$transcript_id= unlist(lapply(strsplit(isoform_gff$Parent, split = ":"),function(x){x[2]}))
+```
+
+```{r}
+sel_ge = "ENSG00000087088"
+sel_tr = rownames(tr_m_new)[grepl(sel_ge,rowData(tr_m_new)$gene_id)]
+isoform_sel = isoform_gff[isoform_gff$transcript_id %in% sel_tr,]
+isoform_sel <- split(isoform_sel, isoform_sel$transcript_id)
+g = ggplot(isoform_sel) + 
+  geom_alignment(label = TRUE)+
+  theme_bw()+theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+                   panel.background = element_blank(), axis.line = element_line(colour = "black"))
+g
+ggsave(file.path(fig_dir,"BAX_isoform_raw.pdf"))
+```
+
+
+```{r}
+
+
+tmp = row_mt[grepl("^ENSG00000087088",row_mt$gene_id),]
+tmp[order(tmp$mean,decreasing = T),]
+```
+
+
+```{r}
+mut_isoform = c("chr19_47831253495272","chr19_47831213982856","chr19_47831205863624","chr19_47831195707816","chr19_47831231726848","chr19_47831222389408")
+maj_isoform = c("chr19_47831195665688","chr19_47831211005480","chr19_47831215212976","chr19_47831204047736")
+
+tmp_cnt = counts(tr_m_new)[c(mut_isoform,maj_isoform),]
+tmp_cnt = tmp_cnt[,colSums(tmp_cnt)>0]
+tmp_cnt_flt = tmp_cnt
+tmp_pct = t(t(tmp_cnt)/colSums(tmp_cnt))
+mut_cells = colnames(tmp_pct)[colSums(tmp_pct[mut_isoform,])>0.3]
+wt_cells = colnames(tmp_pct)[colSums(tmp_pct[mut_isoform,])<0.3]
+```
+
+```{r}
+tmp_cnt = counts(tr_m_new_rachseq)[c(mut_isoform,maj_isoform),]
+tmp_cnt = tmp_cnt[,colSums(tmp_cnt)>1]
+tmp_cnt_rach = tmp_cnt
+tmp_pct = t(t(tmp_cnt)/colSums(tmp_cnt))
+mut_cells1 = colnames(tmp_pct)[colSums(tmp_pct[mut_isoform,])>0.3]
+wt_cells1 = colnames(tmp_pct)[colSums(tmp_pct[mut_isoform,])<0.3]
+```
+
+```{r}
+spatial_df = as.data.frame( srt_sel@reductions$umap@cell.embeddings[colnames(tmp_cnt),] )
+
+ggplot(data=NULL,aes(x=spatial_df$UMAP_1,y=spatial_df$UMAP_2,col=colSums(tmp_pct[mut_isoform,]) ))+
+  geom_point()+
+  theme_classic()
+
+
+ggplot(data=NULL,aes(x=srt_sel$seurat_clusters[match(colnames(tmp_pct),colnames(srt_sel))],y=colSums(tmp_pct[mut_isoform,]) ))+
+  geom_violin(scale = "width")+
+  theme_classic()
+
+ggplot(data=NULL,aes(x=srt_sel$seurat_clusters[match(colnames(tmp_pct),colnames(srt_sel))],y=colSums(tmp_pct[maj_isoform,]) ))+
+  geom_violin(scale = "width")+
+  theme_classic()
+
+```
+
+
+```{r}
+srt_sel.marker = FindAllMarkers(srt_sel)
+```
+
+```{r,fig.width=5,fig.height=9}
+top10 <- srt_sel.marker[srt_sel.marker$p_val_adj<0.01,] %>% group_by(cluster) %>% top_n(n = 30, wt = -p_val_adj) # %>%  top_n(n = 5, wt = avg_logFC)
+top10 = top10 %>% group_by(gene) %>% top_n(n=1,wt=avg_log2FC)
+top10 = top10 %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC)
+
+DotPlot(srt_sel,features = unique(top10$gene),cluster.idents=F )+coord_flip()+labs(x=NULL,y=NULL)
+```
+
+
+```{r}
+
+srt_sel$bax_mut = "No"
+srt_sel$bax_mut[colnames(srt_sel) %in% c(mut_cells)] = "Mut"
+srt_sel$bax_mut[colnames(srt_sel) %in% c(wt_cells)] = "WT"
+
+srt_sel$bax_mut[colnames(srt_sel) %in% c(mut_cells,mut_cells1)] = "Mut"
+srt_sel$bax_mut[colnames(srt_sel) %in% c(wt_cells,wt_cells1)] = "WT"
+```
+
+
+```{r}
+DimPlot(srt_sel,group.by = "bax_mut",cols = c("red","grey80","blue"),order = T,pt.size = 0.6)
+```
+
+```{r}
+srt_sel = FindNeighbors(srt_sel,dims=1:20,k=15,verbose = F)
+```
+
+
+```{r}
+snn_mat = as.matrix(srt_sel@graphs$RNA_snn)
+
+expr = rbind(colSums(tmp_cnt[mut_isoform,]),colSums(tmp_cnt[maj_isoform,]))
+new_expr = matrix(0,2,ncol(snn_mat))
+rownames(new_expr) = c("mut","maj")
+colnames(new_expr) = colnames(snn_mat)
+new_expr[,colnames(expr)] = expr
+
+
+
+new_expr = new_expr %*% snn_mat
+new_expr = t(t(new_expr)/colSums(snn_mat))
+
+#new_expr = new_expr %*% snn_mat
+#new_expr = t(t(new_expr)/colSums(snn_mat))
+
+expr_scale = t(t(new_expr)/colSums(new_expr))
+#expr_scale = t(apply(expr_scale,1,function(x){x[x<quantile(x,0.05,na.rm=T)]=quantile(x,0.05,na.rm=T) 
+#x[x>quantile(x,0.95,na.rm=T)]=quantile(x,0.95,na.rm=T)
+#return(x)}))
+
+#expr_scale = expr_scale[,!apply(expr_scale,2,function(x){any(is.na(x))})]
+```
+
+
+```{r}
+spatial_df = as.data.frame( srt_sel@reductions$umap@cell.embeddings )
+spatial_df$mut_perc = expr_scale[1,]
+spatial_df$maj_perc = expr_scale[2,]
+spatial_df = spatial_df[!is.na(spatial_df$mut_perc),]
+spatial_df$mut_bin = (spatial_df$mut_perc>0.8)
+spatial_df = spatial_df[order(spatial_df$mut_bin),]
+ggplot(data=spatial_df,aes(x=UMAP_1,y=UMAP_2,col=mut_perc ))+
+  geom_point(alpha=0.6)+
+  theme_classic()
+ggplot(data=spatial_df,aes(x=UMAP_1,y=UMAP_2,col=maj_perc ))+
+  geom_point(alpha=0.6)+
+  theme_classic()
+
+ggplot(data=spatial_df,aes(x=UMAP_1,y=UMAP_2,col=mut_bin ))+
+  geom_point(alpha=0.6)+
+  theme_classic()
+
+ggplot(data=spatial_df,aes(x=UMAP_1,y=UMAP_2,col=mut_bin,size=mut_bin))+
+  geom_point(alpha=0.6)+
+  scale_color_manual(values = c("FALSE"="grey70","TRUE"="black") )+
+  scale_size_manual(values = c("FALSE"=.5,"TRUE"=1))+
+  labs(title="BAX isoform")+
+  theme_void()+
+  theme(legend.position = "none")
+ggsave(file.path(fig_dir,"bax_isoform_umap_relapsed.pdf"),width = 4,height = 4)
+```
+
+```{r}
+p1 = FeaturePlot(srt_sel,features = c("KLF3"),cols = c("grey90","#B91035"),order=T,max.cutoff = "q99")+theme_void()
+p2 = FeaturePlot(srt_sel,features = c("MYF6"),cols = c("grey90","#B91035"),order=T,max.cutoff = "q99")+theme_void()
+ggsave(file.path(fig_dir,"umap_KLF3_MYF6_expr.pdf"),plot = ggarrange(p1,p2,ncol=2,nrow=1),width =5.2,height = 2.5)
+
+```
+
+
+```{r}
+ggplot(data=NULL,aes(x=srt_sel$seurat_clusters[srt_sel$bax_mut != "No"],fill=srt_sel$bax_mut[srt_sel$bax_mut != "No"]))+
+  geom_bar(position="dodge")
+```
+
+
+```{r}
+bax_marker = FindMarkers( srt_sel, ident.1 = "WT",ident.2 = "Mut",group.by = "bax_mut")
+```
+
+
+
+
+```{r}
+M5890 <- read.table("/stornext/General/data/user_managed/grpu_mritchie_1/LuyiTian/Rachel_CLL_analysis/figs/CLL_plot/csvs/M5890.txt", quote="\"", skip=2)
+
+srt_sel <- AddModuleScore(
+  object = srt_sel,
+  features = list(M5890$V1),
+  ctrl = 100,
+  name = 'NFKB_genes'
+)
+
+srt2 <- AddModuleScore(
+  object = srt2,
+  features = list(M5890$V1),
+  ctrl = 100,
+  name = 'NFKB_genes'
+)
+```
+
+```{r}
+
+VlnPlot(srt2,"NFKB_genes1",group.by = "condition")
+
+```
+
+
+```{r}
+FeaturePlot(srt_sel,features = c("NFKB_genes1"),cols = c("grey90","#B91035"),order=T,max.cutoff = "q99")+theme_void()
+ggsave(file.path(fig_dir,"umap_NFKB.pdf"),width = 3,height = 2.5)
+```
+
+```{r}
+srt2$new_cond = srt2$condition
+srt2$new_cond[colnames(srt2) %in% rownames(spatial_df)[spatial_df$mut_bin==T]] = "BAX_mut"
+
+pdf(file.path(fig_dir,"vlnplot_markers.pdf"))
+
+VlnPlot(srt2,"NFKB_genes1",group.by = "new_cond",pt.size=0)
+VlnPlot(srt2,"MCL1",group.by = "new_cond",pt.size=0)
+VlnPlot(srt2,"BCL2",group.by = "new_cond",pt.size=0)
+VlnPlot(srt2,"BCL2L1",group.by = "new_cond",pt.size=0)
+
+dev.off()
+
+```
+
+
+```{r}
+srt_r = srt_sel
+```
+
+
+#screen
+
+
+srt_sel = srt2
+#srt_sel = srt_175
+
+
+```{r}
+srt_s = srt[,srt$sample_id %in% c( "CLL5309" )]
+srt_s = FindVariableFeatures(srt_s,nfeatures = 2000,verbose = F)
+srt_s = ScaleData(srt_s,verbose = F)
+srt_s = RunPCA(srt_s,verbose = F)
+srt_s = FindNeighbors(srt_s,dims=1:20,verbose = F)
+srt_s = RunUMAP(srt_s,dims = 1:20,verbose = F)
+srt_s = FindClusters(srt_s, dims=1:20,verbose = F)
+```
+
+```{r}
+DimPlot(srt_s,label=T)
+```
+
+
+```{r}
+co = colorRampPalette( ggsci::pal_npg()(10))(length(unique(srt_s$seurat_clusters)))
+DimPlot(srt_s,cols = co,label=F)+theme_void()+theme(legend.position = "none")
+ggsave(file.path(fig_dir,"umap_clusters_screening.pdf"),width = 3,height = 3)
+```
+
+
+
+```{r}
+srt_sel = srt_s
+```
+
+
+
+```{r}
+srt_sel.marker = FindAllMarkers(srt_sel,max.cells.per.ident = 1000)
+```
+
+```{r,fig.width=5,fig.height=9}
+top10 <- srt_sel.marker[srt_sel.marker$p_val_adj<0.01,] %>% group_by(cluster) %>% top_n(n = 30, wt = -p_val_adj) # %>%  top_n(n = 5, wt = avg_logFC)
+top10 = top10 %>% group_by(gene) %>% top_n(n=1,wt=avg_log2FC)
+top10 = top10 %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC)
+
+DotPlot(srt_sel,features = unique(top10$gene),cluster.idents=F )+coord_flip()+labs(x=NULL,y=NULL)
+```
+
+```{r}
+get_barcode_seq = function(meta_df){
+  cell_bc = rownames(meta_df)
+  #cell_bc = sapply(strsplit(cell_bc,split="_"),function(x){x[2]})
+  cell_bc = sapply(strsplit(cell_bc,split="-"),function(x){x[2]})
+  return(cell_bc)
+}
+
+meta_df = srt_sel@meta.data
+
+meta_df$barcode_seq = get_barcode_seq(meta_df)
+meta_df$lib_batch = sapply(strsplit(meta_df$Sample,split="_"),function(x){x[2]})
+
+
+```
+
+
+```{r}
+smp_id='cll5309'
+c_smp_id="CLL5309"
+Min_tr_cnt = 10
+transcript_id_table <- read.delim("/stornext/Genomics/data/CLL_venetoclax/FLTseq/gff_comp/transcript_id_table.csv", sep=",",header=T)
+  tr_id_table_sel = transcript_id_table[transcript_id_table$sample_id==smp_id,]
+
+  data_dir=paste0("/stornext/Genomics/data/CLL_venetoclax/RaCHseq/",smp_id,"/",smp_id,"_isoform_outs")
+  
+  transcript_count <- read.csv(file.path(data_dir,"transcript_count.csv.gz"), stringsAsFactors=FALSE)
+  if (smp_id=="cll30352"){
+        meta_df_sel = meta_df[meta_df$sample_id == c_smp_id & meta_df$lib_batch=="lib20",]
+  }else{
+        meta_df_sel = meta_df[meta_df$sample_id == c_smp_id & meta_df$lib_batch=="lib80",]
+  }
+
+  tr_sce = SingleCellExperiment(assays=list(counts=as.matrix(transcript_count[,-c(1,2)]) ))
+  rownames(tr_sce) = transcript_count$transcript_id
+  rowData(tr_sce)$gene_id = transcript_count$gene_id
+  tr_sce = addPerCellQC(tr_sce)
+  tr_sce = addPerFeatureQC(tr_sce)
+  keep.hi <- isOutlier(tr_sce$sum, type="higher", log=TRUE)
+  keep.low <- isOutlier(tr_sce$sum, type="lower", log=TRUE)
+  tr_sce = tr_sce[,(!keep.hi) & (!keep.low)]
+  tr_sce = tr_sce[rowSums(counts(tr_sce))>Min_tr_cnt,]
+  print(table(colnames(tr_sce) %in% meta_df_sel$barcode_seq))
+  print(table(meta_df_sel$barcode_seq %in% colnames(tr_sce)))
+  tr_sce = tr_sce[,colnames(tr_sce) %in% meta_df_sel$barcode_seq]
+  meta_df_sel = meta_df_sel[match(colnames(tr_sce),meta_df_sel$barcode_seq),]
+  tr_sce = tr_sce[rownames(tr_sce) %in% tr_id_table_sel$raw_tr_id,]
+  colnames(tr_sce) = rownames(meta_df_sel)
+  rowData(tr_sce)$u_trid = tr_id_table_sel$joint_tr_id[match(rownames(tr_sce),tr_id_table_sel$raw_tr_id)]
+  #tr_sce = tr_sce[rowData(tr_sce)$gene_id %in% sel_mk_gene]
+  joint_tr_cnt = sumCountsAcrossCells(t(counts(tr_sce)),rowData(tr_sce)$u_trid)
+  tr_m_new = SingleCellExperiment(assays=SimpleList(counts=t(assay(joint_tr_cnt,"sum"))) )
+  row_mt = as.data.frame(rowData(tr_sce))
+  row_mt$joint_tr_id = tr_id_table_sel$joint_tr_id[match(rownames(row_mt),tr_id_table_sel$raw_tr_id)]
+
+  rowData(tr_m_new)$gene_id = row_mt$gene_id[match(rownames(tr_m_new), row_mt$joint_tr_id)]
+  tr_m_new$sample_id=c_smp_id
+  tr_m_new_rachseq = tr_m_new
+```
+
+```{r}
+
+  tr_id_table_sel = transcript_id_table[transcript_id_table$sample_id==smp_id,]
+
+    data_dir=paste0("/stornext/Genomics/data/CLL_venetoclax/FLTseq/",smp_id,"/",smp_id,"_isoform_outs")
+  
+  transcript_count <- read.csv(file.path(data_dir,"transcript_count.csv.gz"), stringsAsFactors=FALSE)
+    meta_df_sel = meta_df[meta_df$sample_id == c_smp_id & meta_df$lib_batch=="lib20",]
+  
+  tr_sce = SingleCellExperiment(assays=list(counts=as.matrix(transcript_count[,-c(1,2)]) ))
+  rownames(tr_sce) = transcript_count$transcript_id
+  rowData(tr_sce)$gene_id = transcript_count$gene_id
+  tr_sce = addPerCellQC(tr_sce)
+  tr_sce = addPerFeatureQC(tr_sce)
+  keep.hi <- isOutlier(tr_sce$sum, type="higher", log=TRUE)
+  keep.low <- isOutlier(tr_sce$sum, type="lower", log=TRUE)
+  tr_sce = tr_sce[,(!keep.hi) & (!keep.low)]
+  tr_sce = tr_sce[rowSums(counts(tr_sce))>Min_tr_cnt,]
+  print(table(colnames(tr_sce) %in% meta_df_sel$barcode_seq))
+  print(table(meta_df_sel$barcode_seq %in% colnames(tr_sce)))
+  tr_sce = tr_sce[,colnames(tr_sce) %in% meta_df_sel$barcode_seq]
+  meta_df_sel = meta_df_sel[match(colnames(tr_sce),meta_df_sel$barcode_seq),]
+  tr_sce = tr_sce[rownames(tr_sce) %in% tr_id_table_sel$raw_tr_id,]
+  colnames(tr_sce) = rownames(meta_df_sel)
+  rowData(tr_sce)$u_trid = tr_id_table_sel$joint_tr_id[match(rownames(tr_sce),tr_id_table_sel$raw_tr_id)]
+  #tr_sce = tr_sce[rowData(tr_sce)$gene_id %in% sel_mk_gene]
+  joint_tr_cnt = sumCountsAcrossCells(t(counts(tr_sce)),rowData(tr_sce)$u_trid)
+  tr_m_new = SingleCellExperiment(assays=SimpleList(counts=t(assay(joint_tr_cnt,"sum"))) )
+  row_mt = as.data.frame(rowData(tr_sce))
+  row_mt$joint_tr_id = tr_id_table_sel$joint_tr_id[match(rownames(row_mt),tr_id_table_sel$raw_tr_id)]
+
+  rowData(tr_m_new)$gene_id = row_mt$gene_id[match(rownames(tr_m_new), row_mt$joint_tr_id)]
+  tr_m_new$sample_id=c_smp_id
+  
+```
+
+```{r}
+library(rtracklayer)
+library(ggbio)
+```
+
+
+```{r}
+isoform_gff = import("/stornext/Genomics/data/CLL_venetoclax/FLTseq/gff_comp/combined_transcripts.gff3")
+isoform_gff$Parent = as.character(isoform_gff$Parent)
+isoform_gff$transcript_id= unlist(lapply(strsplit(isoform_gff$Parent, split = ":"),function(x){x[2]}))
+```
+
+```{r}
+sel_ge = "ENSG00000087088"
+sel_tr = rownames(tr_m_new)[grepl(sel_ge,rowData(tr_m_new)$gene_id)]
+isoform_sel = isoform_gff[isoform_gff$transcript_id %in% sel_tr,]
+isoform_sel <- split(isoform_sel, isoform_sel$transcript_id)
+g = ggplot(isoform_sel) + 
+  geom_alignment(label = TRUE)+
+  theme_bw()+theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+                   panel.background = element_blank(), axis.line = element_line(colour = "black"))
+g
+
+```
+
+
+```{r}
+mut_isoform = c("chr19_47831253495272","chr19_47831213982856","chr19_47831205863624","chr19_47831195707816","chr19_47831231726848","chr19_47831222389408")
+mut_isoform = mut_isoform[mut_isoform %in% rownames(tr_m_new)]
+maj_isoform = c("chr19_47831195665688","chr19_47831211005480","chr19_47831215212976","chr19_47831204047736")
+
+tmp_cnt = counts(tr_m_new)[c(mut_isoform,maj_isoform),]
+tmp_cnt = tmp_cnt[,colSums(tmp_cnt)>0]
+tmp_cnt_flt = tmp_cnt
+tmp_pct = t(t(tmp_cnt)/colSums(tmp_cnt))
+mut_cells = colnames(tmp_pct)[colSums(tmp_pct[mut_isoform,])>0.3]
+wt_cells = colnames(tmp_pct)[colSums(tmp_pct[mut_isoform,])<0.3]
+```
+
+
+
+```{r}
+
+srt_sel$bax_mut = "No"
+srt_sel$bax_mut[colnames(srt_sel) %in% c(mut_cells)] = "Mut"
+srt_sel$bax_mut[colnames(srt_sel) %in% c(wt_cells)] = "WT"
+
+srt_sel$bax_mut[colnames(srt_sel) %in% c(mut_cells,mut_cells1)] = "Mut"
+srt_sel$bax_mut[colnames(srt_sel) %in% c(wt_cells,wt_cells1)] = "WT"
+```
+
+
+```{r}
+DimPlot(srt_sel,split.by = "bax_mut",group.by = "bax_mut",cols = c("red","grey80","blue"),order = F,pt.size = 0.6)
+```
+
+
+```{r}
+snn_mat = as.matrix(srt_sel@graphs$RNA_snn)
+
+expr = rbind(colSums(tmp_cnt[mut_isoform,]),colSums(tmp_cnt[maj_isoform,]))
+new_expr = matrix(0,2,ncol(snn_mat))
+rownames(new_expr) = c("mut","maj")
+colnames(new_expr) = colnames(snn_mat)
+new_expr[,colnames(expr)] = expr
+
+
+
+new_expr = new_expr %*% snn_mat
+new_expr = t(t(new_expr)/colSums(snn_mat))
+
+#new_expr = new_expr %*% snn_mat
+#new_expr = t(t(new_expr)/colSums(snn_mat))
+
+expr_scale = t(t(new_expr)/colSums(new_expr))
+#expr_scale = t(apply(expr_scale,1,function(x){x[x<quantile(x,0.05,na.rm=T)]=quantile(x,0.05,na.rm=T) 
+#x[x>quantile(x,0.95,na.rm=T)]=quantile(x,0.95,na.rm=T)
+#return(x)}))
+
+#expr_scale = expr_scale[,!apply(expr_scale,2,function(x){any(is.na(x))})]
+```
+
+
+```{r}
+spatial_df = as.data.frame( srt_sel@reductions$umap@cell.embeddings )
+spatial_df$mut_perc = expr_scale[1,]
+spatial_df$maj_perc = expr_scale[2,]
+spatial_df = spatial_df[!is.na(spatial_df$mut_perc),]
+spatial_df$mut_bin = rownames(spatial_df) %in% mut_cells
+#spatial_df$mut_bin = srt_sel$bax_mut == "Mut"# spatial_df$mut_perc>0.99
+spatial_df = spatial_df[order(spatial_df$mut_bin),]
+ggplot(data=spatial_df,aes(x=UMAP_1,y=UMAP_2,col=mut_perc ))+
+  geom_point(alpha=0.6)+
+  theme_classic()
+ggplot(data=spatial_df,aes(x=UMAP_1,y=UMAP_2,col=maj_perc ))+
+  geom_point(alpha=0.6)+
+  theme_classic()
+
+ggplot(data=spatial_df,aes(x=UMAP_1,y=UMAP_2,col=mut_bin ))+
+  geom_point(alpha=0.6)+
+  theme_classic()
+
+ggplot(data=spatial_df,aes(x=UMAP_1,y=UMAP_2,col=mut_bin))+
+  geom_point(alpha=0.6,size=0.8)+
+  scale_color_manual(values = c("FALSE"="grey70","TRUE"="black") )+
+  #scale_size_manual(values = c("FALSE"=1,"TRUE"=2))+
+  labs(title="BAX isoform")+
+  theme_void()+
+  theme(legend.position = "none")
+ggsave(file.path(fig_dir,"bax_isoform_umap_screening.pdf"),width = 3,height = 3)
+```
+
+
+```{r}
+
+```
+
+
+

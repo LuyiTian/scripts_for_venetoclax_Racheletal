@@ -1,0 +1,315 @@
+title: "scRNAseq CLL data processing - bioc pipeline"
+
+```{r, include=FALSE, eval=TRUE}
+knitr::opts_chunk$set(warning=FALSE,message=FALSE)
+```
+
+```{r,warning=FALSE,message=FALSE}
+library(Seurat)
+library(ggplot2)
+library(cowplot)
+library(dplyr)
+library(tidyr)
+library(SeuratWrappers)
+library(Polychrome)
+library(readxl)
+library(org.Hs.eg.db)
+library(DelayedArray)
+library(ggpubr)
+library(AnnotationHub)
+library(scater)
+library(scran)
+library(batchelor)
+library(harmony)
+library(DropletUtils)
+library(BiocNeighbors)
+set.seed(19910603)
+library(BiocParallel)
+bpp <- MulticoreParam(12)
+```
+
+```{r}
+data_root = "/stornext/Genomics/data/CLL_venetoclax/data_analysis/CLL_analysis/scripts"
+dir.create(file.path(data_root, "data"))
+dir.create(file.path(data_root, "figs"))
+```
+
+
+```{r}
+antibody_list = c("CD45RA","HLA_DR","CD5","IgM","CD38","CD197_(CCR7)","CD25","CD4_RPA-T4","CD11c","CD3_UCHT1","CD184_(CXCR4)","CD20","CD14_63D3","CD8","CD16","CD56_(NCAM)","CD326_(Ep_CAM)")
+# setwd("/stornext/General/data/user_managed/grpu_mritchie_1/LuyiTian/Rachel_CLL_analysis")
+sampleID_annotation <- read_excel("sampleID_annotation.xlsx")
+#sample_names = c("CLL175","CLL5309")
+dir_list = list()
+for (sample in sampleID_annotation$sample_id) { # test run
+  if(dir.exists(file.path("cr_output",sample, "filtered_feature_bc_matrix"))){
+    dir_list[[paste(sample,"lib20",sep="_")]] = file.path("cr_output",sample, "filtered_feature_bc_matrix")
+  }else{
+    dir_list[[paste(sample,"lib20",sep="_")]] = file.path("cr_output",sample, "filtered_feature_bc_matrix20")
+    dir_list[[paste(sample,"lib80",sep="_")]] = file.path("cr_output",sample, "filtered_feature_bc_matrix80")
+  }
+}
+sce = read10xCounts(dir_list,sample.names = names(dir_list))
+colnames(sce)<- paste0(sce$Sample,"-",sce$Barcode)
+sce <- splitAltExps(sce, rowData(sce)$Type)
+altExp(sce) = altExp(sce)[rownames(altExp(sce)) %in% antibody_list, ]
+counts(altExp(sce)) <- as.matrix(counts(altExp(sce)))
+sce$sample_id = sapply(strsplit(sce$Sample,"_"),function(x){x[1]}) 
+```
+
+
+```{r}
+sce$condition = sampleID_annotation$CLL_status[match(sce$sample_id,sampleID_annotation$sample_id)]
+sce$patient_id = sampleID_annotation$patient_id[match(sce$sample_id,sampleID_annotation$sample_id)]
+```
+
+
+
+```{r}
+ah <- AnnotationHub()
+EnsDb.Hsapiens.v98 <- query(ah, c("EnsDb", "Homo Sapiens", 98))[[1]]
+rownames(sce) <- uniquifyFeatureNames(rowData(sce)$ID, rowData(sce)$Symbol)
+# Add chromosome location so we can filter on mitochondrial genes.
+meta_ref <- select(
+  x = EnsDb.Hsapiens.v98, 
+  # NOTE: Need to remove gene version number prior to lookup.
+  keys = rowData(sce)$ID,
+  keytype = "GENEID",
+  column = c("SEQNAME","GENEBIOTYPE"),multiVals="first")
+sce = sce[match(meta_ref$GENEID, rowData(sce)$ID),]
+rowData(sce)$CHR <- meta_ref$SEQNAME
+rowData(sce)$biotype <- meta_ref$GENEBIOTYPE
+```
+
+
+
+```{r}
+sce <- unfiltered <- addPerCellQC(sce, BPPARAM=bpp,
+    subsets=list(Mito=which(rowData(sce)$CHR=="MT")))
+
+qc <- quickPerCellQC(colData(sce), batch=sce$sample_id,
+    sub.fields="subsets_Mito_percent")
+qc$discard[unfiltered$sum>1500 & unfiltered$detected>500] = FALSE
+qc$discard[unfiltered$sum<500 | unfiltered$detected<400] = TRUE
+qc$discard[unfiltered$subsets_Mito_percent>15] = TRUE
+qc$discard[unfiltered$`altexps_Antibody Capture_sum`<50] = TRUE
+
+unfiltered$discard <- qc$discard
+
+
+sce <- sce[,!qc$discard]
+dim(sce)
+```
+
+remove VDJ genes
+
+```{r}
+table( rowData(sce)$biotype[!(grepl("^IG_",rowData(sce)$biotype)| grepl("^TR_",rowData(sce)$biotype))] )
+sce = sce[!(grepl("^IG_",rowData(sce)$biotype)| grepl("^TR_",rowData(sce)$biotype)),]
+```
+
+
+
+```{r}
+png("figs/QC_all_metrics_persample.png",width = 2000,height = 2500)
+gridExtra::grid.arrange(
+    plotColData(unfiltered, x="sample_id", y="sum", colour_by="discard") +
+        scale_y_log10() + ggtitle("Total count")+theme(axis.text.x = element_text(angle = 60, vjust = 0.5, hjust=1)),
+    plotColData(unfiltered, x="sample_id", y="detected", colour_by="discard") +
+        scale_y_log10() + ggtitle("Detected features")+theme(axis.text.x = element_text(angle = 60, vjust = 0.5, hjust=1)),
+    plotColData(unfiltered, x="sample_id", y="subsets_Mito_percent",
+        colour_by="discard") + ggtitle("Mito percent")+theme(axis.text.x = element_text(angle = 60, vjust = 0.5, hjust=1)),
+    ncol=1
+)
+dev.off()
+```
+
+```{r}
+plotColData(unfiltered[,unfiltered$sample_id=="CLL170i"], x="sum", y="detected", 
+    colour_by="discard") + scale_x_log10()
+```
+
+
+```{r,fig.width=12,fig.height=8}
+ggplot(data=NULL,aes(x=unfiltered$Sample,y=log2(unfiltered$`altexps_Antibody Capture_sum`+1)))+
+  geom_boxplot(outlier.colour = NA)+
+  labs(x="",y="log2_antibody_counts")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 30, vjust = 0.5, hjust=1))
+ggsave("figs/QC_ADT_counts_persample_boxplot.pdf")
+```
+
+
+
+
+```{r, filter genes}
+sce = sce[rowSums(counts(sce))>50,] # we have a relatively large cutoff because there are >200,000 cells in the dataset
+
+```
+
+
+```{r}
+sce = HDF5Array::saveHDF5SummarizedExperiment(sce,dir="data_h5",replace=T)
+```
+
+```{r, normalization of RNA-seq data}
+sce <- logNormCounts(sce, size_factors = colSums(counts((sce)))/median(colSums(counts((sce)))))
+dec <- modelGeneVar(sce, block = sce$sample_id)
+hvg <- getTopHVGs(dec, n=4000)
+```
+
+```{r, normalization of CITE-seq data}
+#sf.amb <- medianSizeFactors(altExp(sce))
+# Error in .local(x, ...) : size factors should be positive
+sizeFactors(altExp(sce)) <- 1+colSums(counts(altExp(sce)))/median(colSums(counts(altExp(sce))))
+altExp(sce) <- logNormCounts(altExp(sce))
+```
+
+
+
+
+
+
+```{r}
+sce_corrected <- fastMNN(
+  sce,
+  batch = factor(sce$sample_id),
+  k = 30,
+  d = 50,
+  deferred=FALSE,
+  auto.merge = TRUE,
+  subset.row = hvg,
+  BSPARAM=BiocSingular::RandomParam(deferred = FALSE), 
+     BNPARAM=AnnoyParam(),
+     BPPARAM=bpp)
+reducedDim(sce, 'MNN') <- reducedDim(sce_corrected, 'corrected')
+```
+
+
+```{r}
+saveRDS(sce_corrected,file="data/sce_corrected.Rds")
+HDF5Array::quickResaveHDF5SummarizedExperiment(sce)
+```
+
+
+
+
+```{r}
+counts(sce) <- as(counts(sce, withDimnames = FALSE), "dgCMatrix")
+logcounts(sce) <- as(logcounts(sce, withDimnames = FALSE), "dgCMatrix")
+```
+
+
+```{r}
+
+srt <- as.Seurat(sce, counts = "counts", data = "logcounts")
+
+srt[["ADT"]] <- CreateAssayObject(counts = counts( altExp(sce)))
+srt <- NormalizeData(srt, assay = "ADT", normalization.method = "CLR")
+srt <- ScaleData(srt, assay = "ADT")
+```
+
+
+```{r}
+srt <- FindNeighbors(srt, reduction = "MNN", dims = 1:50, nn.eps = 0.1,verbose = F)
+srt <- FindClusters(srt, resolution = 0.6, n.start = 10,verbose = F)
+srt <- RunUMAP(srt, reduction = "MNN", dims = 1:50, min.dist = 0.3,verbose = F)
+```
+
+
+```{r}
+srt = readRDS("data/seurat_allcells.Rds")
+sce = HDF5Array::loadHDF5SummarizedExperiment("data_h5")
+if(all(colnames(srt)==colnames(sce))){
+  sce$cluster_id = srt$seurat_clusters
+}
+
+keep_clu = names(table(sce$cluster_id)[table(sce$cluster_id)>20])
+sce = sce[,sce$cluster_id %in% keep_clu]
+sce$cluster_id = as.character(sce$cluster_id )
+srt = subset(x = srt, idents = keep_clu)
+srt$seurat_clusters = as.character(srt$seurat_clusters )
+```
+
+
+```{r,fig.width=16,fig.height=16}
+RidgePlot(srt,features = c("CD3-UCHT1","CD8","CD4-RPA-T4","CD20","CD16","HLA-DR","CD25","CD14-63D3","IgM"),assay="ADT")
+```
+
+Remove doublets
+
+```{r}
+double_pos_cd20 = srt@assays$ADT@data["CD20",]>1 & srt@assays$ADT@data["CD3-UCHT1",]>2
+
+tmp = table(srt$seurat_clusters,double_pos_cd20)
+tmp = tmp/rowSums(tmp)
+dbl_cluster =  names(which(tmp[,2]>0.2))  # use 0.1 as the threshold for doublet
+dbl_cluster
+srt = subset(x = srt, idents = dbl_cluster, invert = TRUE)
+sce = sce[,sce$cluster_id != dbl_cluster]
+
+double_pos_cd20 = srt@assays$ADT@data["CD20",]>1 & srt@assays$ADT@data["CD3-UCHT1",]>2
+sce = sce[,!double_pos_cd20]
+srt = srt[,!double_pos_cd20]
+```
+
+
+```{r}
+srt <- FindNeighbors(srt, reduction = "MNN", dims = 1:50, nn.eps = 0.1,verbose = F)
+srt <- FindClusters(srt, resolution = 0.6, n.start = 10,verbose = F)
+srt <- RunUMAP(srt, reduction = "MNN", dims = 1:50, min.dist = 0.2,verbose = F)
+```
+
+```{r}
+cd20_pos = srt@assays$ADT@data["CD3-UCHT1",]>2
+tmp = table(srt$seurat_clusters,cd20_pos)
+tmp = tmp/rowSums(tmp)
+T_cluster =  names(which(tmp[,2]>0.1))
+
+cd16_pos = srt@assays$ADT@data["CD14-63D3",]>2
+tmp = table(srt$seurat_clusters,cd16_pos)
+tmp = tmp/rowSums(tmp)
+Mono_cluster =  names(which(tmp[,2]>0.5))
+
+srt$major_celltype = "CLL/B cell"
+srt$major_celltype[srt$seurat_clusters %in% T_cluster] = "T/NK cell"
+srt$major_celltype[srt$seurat_clusters %in% Mono_cluster] = "Monocyte"
+sce$major_celltype = srt$major_celltype
+```
+
+```{r}
+srt1 =srt[, !(srt@reductions$umap@cell.embeddings[,1]<(-4.) & srt$major_celltype =="CLL/B cell")]
+srt1 =srt1[, !(srt1@reductions$umap@cell.embeddings[,1]>(-6.) & srt1$major_celltype =="T/NK cell")]
+```
+
+
+```{r}
+ppp = DimPlot(srt1,label = F,raster = F,cols = c("#233087","#616A8A","#616A8A"),group.by = "major_celltype")+theme_void()+theme(legend.position = "none",text = element_text(size = 10))
+ggsave("figs/umap_major.pdf",plot = ppp,width = 5.5,height = 5.5)
+```
+
+```{r}
+color_pal_allcells = ggsci::scale_color_rickandmorty()
+
+color_pal_allcells = colorRampPalette( ggsci::pal_rickandmorty()(10))(length(unique(srt1$seurat_clusters)))
+```
+
+
+```{r}
+ppp = DimPlot(srt1,label = T,raster = F,cols = color_pal_allcells)+theme_void()+theme(legend.position = "none",text = element_text(size = 10))
+ggsave("figs/umap_clusters_allcells.pdf",plot = ppp,width = 5.5,height = 5.5)
+```
+
+
+```{r,fig.width=16,fig.height=16}
+RidgePlot(srt1,features = c("CD3-UCHT1","CD8","CD4-RPA-T4","CD20","CD16","HLA-DR","CD25","CD14-63D3","IgM"),cols =color_pal_allcells,assay="ADT")
+ggsave("figs/ADT_percluster_allcells.pdf")
+```
+
+
+```{r}
+HDF5Array::quickResaveHDF5SummarizedExperiment(sce)
+```
+
+
+

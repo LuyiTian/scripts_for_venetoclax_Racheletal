@@ -1,0 +1,432 @@
+title: "mutation analysis - FLTseq"
+
+
+```{r, include=FALSE, eval=TRUE}
+knitr::opts_chunk$set(warning=FALSE,message=FALSE)
+```
+
+```{r}
+#setwd("/stornext/General/data/user_managed/grpu_mritchie_1/LuyiTian/Rachel_CLL_analysis")
+library(ggplot2)
+library(dplyr)
+#library(tidyr)
+library(formattable)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(ggpubr)
+library(scran)
+library(scater)
+library(rtracklayer)
+library(readxl)
+library(ggbio)
+sampleID_annotation <- read_excel("sampleID_annotation.xlsx")
+Min_tr_cnt=10
+```
+
+
+
+```{r}
+
+transcript_id_table <- read.delim("/stornext/Genomics/data/CLL_venetoclax/FLTseq/gff_comp/transcript_id_table.csv", sep=",",header=T)
+smp_list = as.character( unique(transcript_id_table$sample_id))
+head(transcript_id_table)
+smp_list
+#smp_list = smp_list[!(smp_list=="cll63")]
+```
+
+```{r}
+#smp_list[smp_list=="cll141_v"] = "cll141v"
+#smp_list[smp_list=="cll170_i"] = "cll170i"
+#smp_list[smp_list=="cll170"] = "cll170"
+#smp_list[smp_list=="cll63_v"] = "cll63v"
+```
+
+
+```{r}
+smp_convert_table = smp_list
+
+c_smp_list = toupper(smp_list)
+
+c_smp_list[c_smp_list=="CLL141"] = "CLL141i"
+c_smp_list[c_smp_list=="CLL141_V"] = "CLL141"
+c_smp_list[c_smp_list=="CLL170_I"] = "CLL170i"
+#c_smp_list[c_smp_list=="CLL170V"] = "CLL170"
+c_smp_list[c_smp_list=="CLL63"] = "CLL63i"
+c_smp_list[c_smp_list=="CLL63_V"] = "CLL63"
+
+
+names(smp_convert_table) = c_smp_list
+```
+
+
+```{r}
+srt = readRDS("data/srt_cll_all.Rds")
+```
+
+```{r}
+meta_cll_df = srt@meta.data[,c("Sample","Barcode","sample_id","condition","seurat_clusters")]
+head(meta_cll_df)
+```
+
+
+
+```{r}
+result_list = list()
+for(smp_ix in 1:length(smp_convert_table) ){
+#for(smp_ix in 2:5 ){
+  smp_id = smp_convert_table[[smp_ix]]
+  print(smp_id)
+  c_smp_id = names(smp_convert_table)[smp_ix]
+
+  data_dir=paste0("/stornext/Genomics/data/CLL_venetoclax/FLTseq/",smp_id,"/","mutation_known")
+  if(!dir.exists(data_dir)){
+    print(data_dir)
+    print(paste(smp_id,"do not exist"))
+    next
+  }
+  allele_stat <- read.csv(file.path(data_dir,"allele_stat.csv.gz"), stringsAsFactors=FALSE,comment.char="#")
+  print(allele_stat[allele_stat$ch=="chr18" & allele_stat$pos==63318364,])
+  print(allele_stat[allele_stat$ch=="chr18" & allele_stat$pos==59900026,])
+  print(dim(allele_stat))
+  
+  REF_cnt <- read.csv(file.path(data_dir,"ref_cnt.csv.gz"), stringsAsFactors=FALSE)
+  ALT_cnt <- read.csv(file.path(data_dir,"alt_cnt.csv.gz"), stringsAsFactors=FALSE)
+  allele_stat$ch_pos = paste(allele_stat$ch,allele_stat$pos,sep="_")
+  allele_stat = allele_stat[!duplicated(allele_stat),]
+  rownames(allele_stat) = allele_stat$ch_pos
+  rownames(ALT_cnt) = paste(ALT_cnt$chr,ALT_cnt$pos,sep="_")
+  rownames(REF_cnt) = paste(REF_cnt$chr,REF_cnt$pos,sep="_")
+  comm_ra = intersect(rownames(ALT_cnt), rownames(REF_cnt))
+  ALT_cnt = ALT_cnt[comm_ra,-(1:2)]
+  REF_cnt = REF_cnt[comm_ra,-(1:2)]
+  allele_stat = allele_stat[comm_ra,]
+  colnames(ALT_cnt) = paste0(c_smp_id,"_lib20-",colnames(ALT_cnt),"-1")
+  colnames(REF_cnt) = paste0(c_smp_id,"_lib20-",colnames(REF_cnt),"-1")
+  
+  allele_stat$ch_pos_mut = paste(allele_stat$gene_name,allele_stat$ch_pos,allele_stat$REF,allele_stat$ALT,sep = "_")
+  rownames(ALT_cnt) = allele_stat$ch_pos_mut
+  rownames(REF_cnt) = allele_stat$ch_pos_mut
+  
+  outl =colSums(REF_cnt) < quantile(colSums(REF_cnt),0.99) & colSums(REF_cnt) > 50
+  ALT_cnt=ALT_cnt[,outl]
+  ALT_cnt = ALT_cnt[,colnames(ALT_cnt) %in% rownames(meta_cll_df)]
+  mut_sce = SingleCellExperiment(assays=list(counts=as.matrix(ALT_cnt) ))
+    mut_sce = addPerCellQC(mut_sce)
+  mut_sce = addPerFeatureQC(mut_sce)
+  result_list[[c_smp_id]] = mut_sce
+}
+```
+
+
+
+```{r}
+#merged_se = do.call(combineSE,unname(result_list))
+
+library(scMerge)
+merged_sce = sce_cbind(sce_list = result_list,  cut_off_batch = 0.00,method = "union",
+  cut_off_overall = 0.00,exprs="counts")
+#assay(merged_se,"counts")[is.na(assay(merged_se,"counts"))] = 0
+
+rowData(merged_sce)$chr = sapply(strsplit(rownames(merged_sce),"_"),function(x){x[2]})
+rowData(merged_sce)$pos = as.numeric(sapply(strsplit(rownames(merged_sce),"_"),function(x){x[3]}))
+
+```
+
+
+```{r}
+DimPlot(srt)
+```
+
+```{r}
+srt$G101v_mut = "No"
+col_yes = colnames(merged_sce)[counts(merged_sce)["BCL2_chr18_63318364_C_A",]>0]
+srt$G101v_mut[colnames(srt) %in% col_yes] = "Yes"
+```
+
+
+```{r}
+DimPlot(srt,label = F,reduction="umap",group.by ="G101v_mut")
+```
+
+
+
+```{r}
+assay(merged_sce,"mut_matrix") = (counts(merged_sce)>0) + 0
+```
+
+
+
+```{r}
+colData(merged_sce) = DataFrame(meta_cll_df[colnames(merged_sce),])
+```
+
+
+
+```{r}
+mut_cluster = sumCountsAcrossCells(assay(merged_sce,"mut_matrix"),ids= paste(merged_sce$sample_id,merged_sce$seurat_clusters,sep="::"))
+
+mut_cluster = mut_cluster[rowSums(assay(mut_cluster,"sum"))>30,colSums(assay(mut_cluster,"sum"))>10]
+
+smp_id = sapply(strsplit(colnames(mut_cluster), split ="::"),function(x){x[1]})
+clst_id = sapply(strsplit(colnames(mut_cluster),split = "::"),function(x){x[2]})
+cd = merged_sce$condition[match(smp_id,merged_sce$sample_id)]
+
+
+```
+
+
+```{r}
+library(edgeR)
+
+design_mat = model.matrix(~0+cd)
+# contr.matrix <- makeContrasts(
+#   clu0 = clst_id0-clst_id1,
+#   R_H = clst_id10-clst_id1,
+#   levels = colnames(design_mat))
+
+contr.matrix <- makeContrasts(
+  clu0 = cdRelapsed-cdScreening,
+  R_H = cdRelapsed_ibrutinib-cdRelapsed,
+  levels = colnames(design_mat))
+
+
+allcounts = DGEList(counts=assay(mut_cluster,"sum")) # may need a lot of RAM
+allcounts <- calcNormFactors(allcounts)
+allcounts = estimateDisp(allcounts, design=design_mat, robust=TRUE)
+
+fit = glmQLFit(allcounts, design_mat)
+
+lrt1 = glmQLFTest(fit, contrast=contr.matrix[,1])
+results1 <- decideTests(lrt1,p.value=0.05)
+tp1 = topTags(lrt1,n=Inf)@.Data[[1]]
+
+lrt2 = glmQLFTest(fit, contrast=contr.matrix[,2])
+results2 <- decideTests(lrt2,p.value=0.05)
+tp2 = topTags(lrt2,n=Inf)@.Data[[1]]
+```
+
+```{r}
+hd_cnt = rowSums( assay(mut_cluster,"sum")[,cd=="Healthy"] )
+nohd_mut = names(hd_cnt)[hd_cnt<5]
+```
+
+
+```{r}
+top_tp1_up = head(tp1[tp1$logFC>0 & (rownames(tp1) %in% nohd_mut) & (rownames(tp1) %in% anno$peak),],n=20)
+top_tp1_up$symbol = anno$symbol[match(rownames(top_tp1_up),anno$peak)]
+top_tp1_dn = head(tp1[tp1$logFC<0 & (rownames(tp1) %in% nohd_mut) & (rownames(tp1) %in% anno$peak),],n=20)
+top_tp1_dn$symbol = anno$symbol[match(rownames(top_tp1_dn),anno$peak)]
+```
+
+
+```{r}
+top_tp2_up = head(tp2[tp2$logFC>0 & (rownames(tp2) %in% nohd_mut) & (rownames(tp2) %in% anno$peak),],n=20)
+top_tp2_up$symbol = anno$symbol[match(rownames(top_tp2_up),anno$peak)]
+top_tp2_dn = head(tp2[tp2$logFC<0 & (rownames(tp2) %in% nohd_mut) & (rownames(tp2) %in% anno$peak),],n=20)
+top_tp2_dn$symbol = anno$symbol[match(rownames(top_tp2_dn),anno$peak)]
+```
+
+```{r}
+head(tp2[tp2$logFC<0 & rownames(tp2) %in% nohd_mut,],n=40)
+```
+
+
+```{r}
+plotBCV(allcounts)
+```
+
+
+```{r}
+tmp = assay(mut_cluster,"sum")["chr18_59900026_G_A",]
+tmp[tmp>0]
+```
+
+
+```{r}
+
+cond_df = meta_cll_df[,c("sample_id","condition")]
+cond_df = cond_df[!duplicated(cond_df),]
+get_cond = function(x_axis){
+  tt = sapply(strsplit(x_axis,"::"),function(x){x[1]})
+  return(cond_df$condition[match(tt,cond_df$sample_id)])
+}
+
+
+
+sel_pos = rownames(top_tp1_up)[1:10]
+sel_pos = c(sel_pos, "chr18_59900026_G_A")
+for (sel_idx in sel_pos) {
+  sel_idx_fmt = strsplit(sel_idx,"_")[[1]]
+  if(is.na(top_tp1_up[sel_idx,]$symbol)){
+    sym="PMAIP1"
+  }else{
+    sym=top_tp1_up[sel_idx,]$symbol
+  }
+  sel_idx_fmt = paste0(sym," - ",sel_idx_fmt[1],":",sel_idx_fmt[2]," ",sel_idx_fmt[3]," to ",sel_idx_fmt[4])
+  tmp = assay(mut_cluster,"sum")[sel_idx,]
+  tmp = tmp[tmp>5]
+  p1 = ggplot(data=NULL,aes(x=names(tmp),y=tmp,fill=get_cond(names(tmp)),label=tmp))+
+    geom_bar(stat="identity")+
+    geom_text(vjust=-0.25)+
+    labs(x="sample_id::cluster_id",y="number of cells that have mutation",fill="",title=sel_idx_fmt)+
+    theme_bw()+
+    theme(axis.text.x = element_text(angle = 30, hjust=1))
+  
+  
+  
+  dat_mut = data.frame(mut=as.factor(assay(merged_sce,"mut_matrix")[sel_idx,]),
+                       x=srt@reductions$umap@cell.embeddings[match(colnames(merged_sce),colnames(srt)),1],
+                       y=srt@reductions$umap@cell.embeddings[match(colnames(merged_sce),colnames(srt)),2])
+  dat_mut = dat_mut[order(dat_mut$mut),]
+  p2 = ggplot(data=dat_mut,aes(x=x,y=y,col=mut))+
+    geom_point(size=0.3,alpha=0.2)+
+    scale_color_manual(values = c("0"="grey","1"="black"))+
+    labs(x="Dim1",y="Dim2",col="has mutation",title=sel_idx_fmt)+
+    theme_bw()+
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+  panel.background = element_blank(), axis.line = element_line(colour = "black"))
+  png(file.path("figs","FLTseq","relapsed_screen",paste0(sel_idx_fmt,".png")),width = 1200,height = 600)
+  print(ggarrange(p1,p2,ncol=2,nrow=1))
+  dev.off()
+}
+
+
+sel_pos = rownames(top_tp1_dn)[1:10]
+for (sel_idx in sel_pos) {
+  sel_idx_fmt = strsplit(sel_idx,"_")[[1]]
+  sel_idx_fmt = paste0(top_tp1_dn[sel_idx,]$symbol," - ",sel_idx_fmt[1],":",sel_idx_fmt[2]," ",sel_idx_fmt[3]," to ",sel_idx_fmt[4])
+  tmp = assay(mut_cluster,"sum")[sel_idx,]
+  tmp = tmp[tmp>5]
+  p1 = ggplot(data=NULL,aes(x=names(tmp),y=tmp,fill=get_cond(names(tmp)),label=tmp))+
+    geom_bar(stat="identity")+
+    geom_text(vjust=-0.25)+
+    labs(x="sample_id::cluster_id",y="number of cells that have mutation",fill="",title=sel_idx_fmt)+
+    theme_bw()+
+    theme(axis.text.x = element_text(angle = 30, hjust=1))
+  
+  
+  
+  dat_mut = data.frame(mut=as.factor(assay(merged_sce,"mut_matrix")[sel_idx,]),
+                       x=srt@reductions$umap@cell.embeddings[match(colnames(merged_sce),colnames(srt)),1],
+                       y=srt@reductions$umap@cell.embeddings[match(colnames(merged_sce),colnames(srt)),2])
+  dat_mut = dat_mut[order(dat_mut$mut),]
+  p2 = ggplot(data=dat_mut,aes(x=x,y=y,col=mut))+
+    geom_point(size=0.3,alpha=0.2)+
+    scale_color_manual(values = c("0"="grey","1"="black"))+
+    labs(x="Dim1",y="Dim2",col="has mutation",title=sel_idx_fmt)+
+    theme_bw()+
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+  panel.background = element_blank(), axis.line = element_line(colour = "black"))
+  png(file.path("figs","FLTseq","relapsed_screen",paste0(sel_idx_fmt,".png")),width = 1200,height = 600)
+  print(ggarrange(p1,p2,ncol=2,nrow=1))
+  dev.off()
+}
+
+```
+
+
+```{r}
+
+sel_pos = rownames(top_tp2_up)[1:5]
+for (sel_idx in sel_pos) {
+  sel_idx_fmt = strsplit(sel_idx,"_")[[1]]
+  sel_idx_fmt = paste0(top_tp2_up[sel_idx,]$symbol," - ",sel_idx_fmt[1],":",sel_idx_fmt[2]," ",sel_idx_fmt[3]," to ",sel_idx_fmt[4])
+  tmp = assay(mut_cluster,"sum")[sel_idx,]
+  tmp = tmp[tmp>5]
+  p1 = ggplot(data=NULL,aes(x=names(tmp),y=tmp,fill=get_cond(names(tmp)),label=tmp))+
+    geom_bar(stat="identity")+
+    geom_text(vjust=-0.25)+
+    labs(x="sample_id::cluster_id",y="number of cells that have mutation",fill="",title=sel_idx_fmt)+
+    theme_bw()+
+    theme(axis.text.x = element_text(angle = 30, hjust=1))
+  
+  
+  
+  dat_mut = data.frame(mut=as.factor(assay(merged_sce,"mut_matrix")[sel_idx,]),
+                       x=srt@reductions$umap@cell.embeddings[match(colnames(merged_sce),colnames(srt)),1],
+                       y=srt@reductions$umap@cell.embeddings[match(colnames(merged_sce),colnames(srt)),2])
+  dat_mut = dat_mut[order(dat_mut$mut),]
+  p2 = ggplot(data=dat_mut,aes(x=x,y=y,col=mut))+
+    geom_point(size=0.3,alpha=0.2)+
+    scale_color_manual(values = c("0"="grey","1"="black"))+
+    labs(x="Dim1",y="Dim2",col="has mutation",title=sel_idx_fmt)+
+    theme_bw()+
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+  panel.background = element_blank(), axis.line = element_line(colour = "black"))
+  png(file.path("figs","FLTseq","relapsed_ibr",paste0(sel_idx_fmt,".png")),width = 1200,height = 600)
+  print(ggarrange(p1,p2,ncol=2,nrow=1))
+  dev.off()
+}
+
+
+sel_pos = rownames(top_tp2_dn)[1:10]
+for (sel_idx in sel_pos) {
+  sel_idx_fmt = strsplit(sel_idx,"_")[[1]]
+  sel_idx_fmt = paste0(top_tp2_dn[sel_idx,]$symbol," - ",sel_idx_fmt[1],":",sel_idx_fmt[2]," ",sel_idx_fmt[3]," to ",sel_idx_fmt[4])
+  tmp = assay(mut_cluster,"sum")[sel_idx,]
+  tmp = tmp[tmp>5]
+  p1 = ggplot(data=NULL,aes(x=names(tmp),y=tmp,fill=get_cond(names(tmp)),label=tmp))+
+    geom_bar(stat="identity")+
+    geom_text(vjust=-0.25)+
+    labs(x="sample_id::cluster_id",y="number of cells that have mutation",fill="",title=sel_idx_fmt)+
+    theme_bw()+
+    theme(axis.text.x = element_text(angle = 30, hjust=1))
+  
+  
+  
+  dat_mut = data.frame(mut=as.factor(assay(merged_sce,"mut_matrix")[sel_idx,]),
+                       x=srt@reductions$umap@cell.embeddings[match(colnames(merged_sce),colnames(srt)),1],
+                       y=srt@reductions$umap@cell.embeddings[match(colnames(merged_sce),colnames(srt)),2])
+  dat_mut = dat_mut[order(dat_mut$mut),]
+  p2 = ggplot(data=dat_mut,aes(x=x,y=y,col=mut))+
+    geom_point(size=0.3,alpha=0.2)+
+    scale_color_manual(values = c("0"="grey","1"="black"))+
+    labs(x="Dim1",y="Dim2",col="has mutation",title=sel_idx_fmt)+
+    theme_bw()+
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+  panel.background = element_blank(), axis.line = element_line(colour = "black"))
+  png(file.path("figs","FLTseq","relapsed_ibr",paste0(sel_idx_fmt,".png")),width = 1200,height = 600)
+  print(ggarrange(p1,p2,ncol=2,nrow=1))
+  dev.off()
+}
+```
+
+
+```{r}
+FeaturePlot(srt,c("BCL2L11","PMAIP1"),reduction = "umap")
+```
+
+63123346-63320128
+
+```{r}
+mut_cluster_bcl2 = mut_cluster[rowData(mut_cluster)$chr=="chr18" & rowData(mut_cluster)$pos>63123346 & rowData(mut_cluster)$pos<63320128 & ( rownames(mut_cluster) %in% nohd_mut ), ]
+
+tp1[rownames(tp1) %in% rownames(mut_cluster_bcl2),]
+```
+
+```{r}
+sel_pos = anno$peak[anno$symbol=="BCL2"]
+sel_pos = sel_pos[sel_pos %in% rownames(mut_cluster)]
+pdf(file.path("figs","FLTseq",paste0("BCL2_mut.pdf")),width = 6,height = 4)
+for (sel_idx in sel_pos) {
+  sel_idx_fmt = strsplit(sel_idx,"_")[[1]]
+  sel_idx_fmt = paste0(sel_idx_fmt[1],":",sel_idx_fmt[2]," ",sel_idx_fmt[3]," to ",sel_idx_fmt[4])
+  tmp = assay(mut_cluster,"sum")[sel_idx,]
+  tmp = tmp[tmp>5]
+  p1 = ggplot(data=NULL,aes(x=names(tmp),y=tmp,fill=get_cond(names(tmp)),label=tmp))+
+    geom_bar(stat="identity")+
+    geom_text(vjust=-0.25)+
+    labs(x="sample_id::cluster_id",y="number of cells that have mutation",fill="",title=sel_idx_fmt)+
+    theme_bw()+
+    theme(axis.text.x = element_text(angle = 30, hjust=1))
+
+  print(p1)
+
+}
+  dev.off()
+```
+
+
+
+
+

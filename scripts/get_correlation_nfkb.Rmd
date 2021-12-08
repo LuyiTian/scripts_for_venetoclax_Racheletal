@@ -1,0 +1,99 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+
+data_root = "/stornext/Genomics/data/CLL_venetoclax/data_analysis/CLL_analysis/scripts"
+fig_dir = file.path(data_root, "figs","figs_nfkb_correlation")
+dir.create(fig_dir)
+```
+
+
+
+ATM, ATF3, NFKB genes, BCL2, BCL2L1, BCL2A1, MCL1
+
+```{r}
+
+sel_genes = c("ATM","ATF3","REL","NFKB2","RELB","BCL2","BCL2L1","BCL2A1","MCL1")
+
+sel_mat = srt@assays$RNA@data[sel_genes,srt$condition=="Relapsed"]
+sel_mat = as.matrix(sel_mat)
+cor_relapsed = cor(t(sel_mat))
+diag(cor_relapsed) = NA
+hm = pheatmap::pheatmap(cor_relapsed,cluster_rows = F,cluster_cols = F,border_color = NA,treeheight_row = 0,treeheight_col = 0,filename = file.path(fig_dir,"heatmap_relapsed_cor.pdf"),width = 4,height = 3.5)
+
+sel_mat = srt@assays$RNA@data[sel_genes,srt$condition=="Screening"]
+sel_mat = as.matrix(sel_mat)
+cor_screen = cor(t(sel_mat))
+diag(cor_screen) = NA
+pheatmap::pheatmap(cor_screen,cluster_rows = F,cluster_cols = F,border_color = NA,filename = file.path(fig_dir,"heatmap_screen_cor.pdf"),width = 4,height = 3.5)
+```
+
+```{r}
+sel_mat = srt@assays$RNA@data[,srt$condition=="Relapsed"]
+sel_mat = as.matrix(sel_mat)
+cor_relapsed_all = cor(sel_mat["MCL1",],t(sel_mat))
+```
+
+```{r}
+ggplot(data=NULL,aes(t(cor_relapsed_all)))+
+  geom_histogram(bins = 70)+
+  geom_vline(xintercept = 0.141168511)+
+  geom_vline(xintercept = 0.13306283)+
+  geom_vline(xintercept = 0.09255476)+
+  labs(x="correlation between MCL1 and other genes")+
+  xlim(c(-0.3,0.3))+
+  theme_classic()
+ggsave(filename =file.path(fig_dir,"correlation_compare.pdf"), width = 4,height = 2)
+```
+
+
+
+```{r}
+
+get_cor_df = function(smp_id){
+  sel_mat = srt@assays$RNA@data[c("NFKB2","RELB","REL","MCL1","BCL2","BCL2A1","BCL2L1","ATF3","ATM"),srt$sample_id==smp_id]
+  sel_mat = as.matrix(sel_mat)
+  X = cor(t(sel_mat))
+  
+  ind <- which(upper.tri(X, diag = FALSE), arr.ind = TRUE)
+  nn <- dimnames(X)
+  tmp = data.frame(row = nn[[1]][ind[, 1]],
+             col = nn[[2]][ind[, 2]],
+             val = X[ind])
+  tmp$sample_id = smp_id
+  return(tmp)
+}
+
+cor_list = lapply(unique(srt$sample_id),get_cor_df)
+
+cor_df = Reduce(rbind,cor_list)
+
+pt_anno = unique(srt@meta.data[,c("sample_id","condition","patient_id")])
+cor_df = cor_df %>% left_join(pt_anno,by=c("sample_id"="sample_id"))
+
+cor_df$gene_pair = paste0(cor_df$row,"::",cor_df$col)
+
+cor_df$condition[cor_df$condition=="Relapsed"] = "Re"
+cor_df$condition[cor_df$condition=="Screening"] = "Sc"
+cor_df$condition[cor_df$condition=="Relapsed_ibrutinib"] = "Re_ibr"
+```
+
+
+
+```{r,fig.width=13,fig.height=8}
+ggplot(data=cor_df[(cor_df$row %in% c("NFKB2","RELB","REL")) | (cor_df$col %in% c("NFKB2","RELB","REL")),],aes(x=condition,y=val,col=patient_id))+
+  geom_point()+
+  theme_classic()+
+  facet_wrap(~gene_pair,scales="free")
+ggsave(file.path(fig_dir,"scatter_persample_corr.pdf"))
+```
+
+
+
+

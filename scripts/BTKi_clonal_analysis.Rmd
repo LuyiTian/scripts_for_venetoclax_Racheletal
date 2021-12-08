@@ -1,0 +1,469 @@
+title: "clonal analysis"
+
+
+```{r, include=FALSE, eval=TRUE}
+knitr::opts_chunk$set(warning=FALSE,message=FALSE)
+#setwd("/stornext/Genomics/data/CLL_venetoclax/data_analysis/CLL_analysis/scripts")
+```
+
+```{r}
+library(tidyr)
+library(dplyr)
+library(Seurat)
+library(ggplot2)
+library(RColorBrewer)
+library(ggpubr)
+library(SeuratWrappers)
+data_root = "/stornext/Genomics/data/CLL_venetoclax/data_analysis/CLL_analysis/scripts"
+fig_dir = file.path(data_root, "figs","ibrutinib")
+dir.create(fig_dir)
+```
+
+```{r}
+srt = readRDS(file = "data/srt_cll_all.Rds")
+srt = srt[,!(srt$seurat_clusters == 15)]
+
+getPalette = colorRampPalette(brewer.pal(9, "Set1"))
+clu_colors = getPalette( length(unique(Idents(srt))) )
+names(clu_colors) = levels(Idents(srt))
+```
+
+```{r}
+table(srt$patient_id[srt$condition=="Relapsed_ibrutinib"])
+```
+
+```{r}
+srt$condition = factor(srt$condition, levels = c("Screening","Relapsed","Relapsed_ibrutinib"))
+```
+
+
+```{r}
+plot_df = srt@meta.data
+plot_df = plot_df %>% group_by(condition) %>% mutate(total_c=n()) %>% group_by(condition,seurat_clusters) %>% summarise(pct=n()/total_c)
+plot_df = plot_df[!duplicated(plot_df),]
+ggplot(data=plot_df,aes(x=condition,y=pct,fill=seurat_clusters))+
+  geom_bar(stat = "identity")+
+  scale_fill_manual(values = clu_colors)+
+  labs(x=NULL,y="Proportions",fill="cluster ID")+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle=30,hjust = 1))
+ggsave(file=file.path(fig_dir,"barplot_conditions_cluster.pdf"),width=3,height=6)
+```
+
+
+```{r}
+marker_r_i = FindMarkers(srt,ident.1 = "Relapsed",ident.2 = "Relapsed_ibrutinib",group.by = "condition",min.diff.pct = 0.05)
+
+marker_r_s = FindMarkers(srt,ident.1 = "Relapsed",ident.2 = "Screening",group.by = "condition",min.diff.pct = 0.05)
+```
+
+
+
+
+```{r}
+pp = VlnPlot(srt,features = rownames(marker_r_i[marker_r_i$avg_log2FC<0,])[1:9],group.by = "condition",pt.size=0,ncol=3)
+ggsave(filename = file.path(fig_dir,"vln_topDE_i_R.pdf"),plot = pp,width = 9,height = 9)
+
+pp = VlnPlot(srt,features = rownames(marker_r_i[marker_r_i$avg_log2FC>0,])[1:9],group.by = "condition",pt.size=0,ncol=3)
+ggsave(filename = file.path(fig_dir,"vln_topDE_R_i.pdf"),plot = pp,width = 9,height = 9)
+```
+
+
+```{r}
+pp = VlnPlot(srt,features = rownames(marker_r_s[marker_r_s$avg_log2FC<0,])[1:9],group.by = "condition",pt.size=0,ncol=3)
+ggsave(filename = file.path(fig_dir,"vln_topDE_S_R.pdf"),plot = pp,width = 9,height = 9)
+
+pp = VlnPlot(srt,features = rownames(marker_r_s[marker_r_s$avg_log2FC>0,])[1:9],group.by = "condition",pt.size=0,ncol=3)
+ggsave(filename = file.path(fig_dir,"vln_topDE_R_S.pdf"),plot = pp,width = 9,height = 9)
+```
+
+
+```{r}
+tmp = rownames(marker_r_s[marker_r_s$avg_log2FC>0,])
+write.csv((tmp)[1:80],row.names = F,quote = F)
+```
+
+
+```{r}
+
+```
+
+
+
+
+
+```{r}
+BCL_family = rev( c("BCL2","MCL1","BCL2L1","BCL2A1","HRK","BMF","BIK","BID","BBC3","BAD","PMAIP1","BCL2L11","BAK1","BAX"))
+
+
+ DotPlot(srt,features = BCL_family,group.by = "condition",cluster.idents=F,cols="Spectral")+
+  coord_flip()+theme(axis.text.x = element_text(hjust = 1,angle = 30))+labs(x=NULL,y=NULL)
+ggsave(filename = file.path(fig_dir,"BCL2_fam_by_condition.pdf"),width = 4.5,height = 5)
+ 
+ 
+```
+
+
+
+```{r}
+plot_df = srt@meta.data
+plot_df = plot_df[plot_df$patient_id=="CLL2",]
+plot_df = plot_df[plot_df$seurat_clusters %in% names(table(plot_df$seurat_clusters)[table(plot_df$seurat_clusters)>100]),]
+plot_df = plot_df %>% group_by(condition) %>% mutate(total_c=n()) %>% group_by(condition,seurat_clusters) %>% summarise(pct=n()/total_c)
+plot_df = plot_df[!duplicated(plot_df),]
+pp1 = ggplot(data=plot_df,aes(x=condition,y=pct,fill=seurat_clusters))+
+  geom_bar(stat = "identity")+
+  scale_fill_manual(values = clu_colors)+
+  labs(x=NULL,y="Proportions",fill="cluster ID",title="CLL2")+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle=30,hjust = 1))
+
+plot_df = srt@meta.data
+plot_df = plot_df[plot_df$patient_id=="CLL23",]
+plot_df = plot_df[plot_df$seurat_clusters %in% names(table(plot_df$seurat_clusters)[table(plot_df$seurat_clusters)>100]),]
+plot_df = plot_df %>% group_by(condition) %>% mutate(total_c=n()) %>% group_by(condition,seurat_clusters) %>% summarise(pct=n()/total_c)
+plot_df = plot_df[!duplicated(plot_df),]
+pp2 = ggplot(data=plot_df,aes(x=condition,y=pct,fill=seurat_clusters))+
+  geom_bar(stat = "identity")+
+  scale_fill_manual(values = clu_colors)+
+  labs(x=NULL,y="Proportions",fill="cluster ID",title="CLL23")+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle=30,hjust = 1))
+
+plot_df = srt@meta.data
+plot_df = plot_df[plot_df$patient_id=="CLL5",]
+plot_df = plot_df[plot_df$seurat_clusters %in% names(table(plot_df$seurat_clusters)[table(plot_df$seurat_clusters)>50]),]
+plot_df = plot_df %>% group_by(condition) %>% mutate(total_c=n()) %>% group_by(condition,seurat_clusters) %>% summarise(pct=n()/total_c)
+plot_df = plot_df[!duplicated(plot_df),]
+pp3 = ggplot(data=plot_df,aes(x=condition,y=pct,fill=seurat_clusters))+
+  geom_bar(stat = "identity")+
+  scale_fill_manual(values = clu_colors)+
+  labs(x=NULL,y="Proportions",fill="cluster ID",title="CLL5")+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle=30,hjust = 1))
+
+ggarrange(pp1,pp2,pp3,ncol=3,nrow=1)
+ggsave(file=file.path(fig_dir,"barplot_conditions_cluster_split.pdf"),width=6,height=6)
+```
+```{r}
+library(SeuratWrappers)
+```
+
+
+```{r}
+srt23 = srt[,srt$patient_id %in% c( "CLL23" )]
+srt23 <- RunFastMNN(object.list = SplitObject(srt23,split.by = "sample_id"),
+                    verbose = F )
+srt23 <- RunUMAP(srt23, reduction = "mnn", dims = 1:30)
+srt23 <- FindNeighbors(srt23, reduction = "mnn", dims = 1:30)
+srt23 <- FindClusters(srt23,resolution = 0.6)
+
+```
+
+
+
+
+
+
+
+```{r}
+connectedBarplot <- function(dat, color=rainbow(nrow(dat)), space=0.5, alpha=0.5, ...) {  
+    b <- barplot(dat, col=color, space = space, ...)                     
+
+    for (i in seq_len(ncol(dat) - 1)) {     
+        lines(c(b[i]+0.5, b[i+1]-0.5), c(0, 0)) ## bottom line       
+                  
+        for (j in seq_len(nrow(dat))) {     
+            if (j == 1) {                   
+                lines(c(b[i]+0.5, b[i+1]-0.5), c(dat[j,i], dat[j,i+1]))                       
+                polygon(c(b[i]+0.5, b[i]+0.5, b[i+1]-0.5, b[i+1]-0.5),                        
+                        c(0, dat[j,i], dat[j,i+1], 0),               
+                        col=adjustcolor(color[j], alpha.f=alpha))    
+            }      
+            if (j == 2) {                   
+                lines(c(b[i]+0.5, b[i+1]-0.5), c(colSums(dat[1:j,])[i], colSums(dat[1:j,])[i+1]))                      
+                polygon(c(b[i]+0.5, b[i]+0.5, b[i+1]-0.5, b[i+1]-0.5),                        
+                        c(dat[1,i], colSums(dat[1:j,])[i], colSums(dat[1:j,])[i+1], dat[1,i+1]),                       
+                        col=adjustcolor(color[j], alpha.f=alpha))    
+            }      
+            if (j > 2) {                    
+                lines(c(b[i]+0.5, b[i+1]-0.5), c(colSums(dat[1:j,])[i], colSums(dat[1:j,])[i+1]))                      
+                polygon(c(b[i]+0.5, b[i]+0.5, b[i+1]-0.5, b[i+1]-0.5),                        
+                        c(colSums(dat[1:(j-1),])[i], colSums(dat[1:j,])[i], colSums(dat[1:j,])[i+1], colSums(dat[1:(j-1),])[i+1]),              
+                        col=adjustcolor(color[j], alpha.f=alpha))    
+            }      
+        }          
+    }              
+}      
+```
+
+
+
+```{r}
+pdf(file.path(fig_dir,"barplot_bycond_cll23.pdf"),width = 4.5,height = 4)
+co = colorRampPalette( ggsci::pal_npg()(10))(nrow(tmp))
+tmp = as.matrix(table(srt23$seurat_clusters,srt23$condition))
+tmp = tmp[,c("Screening","Relapsed","Relapsed_ibrutinib")]
+tmp = t(t(tmp)/colSums(tmp))
+tmp = tmp[order((tmp[,c(2)]/rowSums(tmp[,c(1,3)]))),]
+names(co) = rownames(tmp)
+connectedBarplot(tmp,color=co )
+dev.off()
+```
+
+```{r,fig.width=4,fig.height=3.5}
+DimPlot(srt23,label=T,cols = co)+theme_void()
+ggsave(file.path(fig_dir,"umap_CLL23.pdf"))
+```
+
+```{r}
+tmp.m = FindMarkers(srt23,ident.1 = c(3,5,6,0),min.diff.pct = 0.05,verbose = F)
+tmp.m1 = FindMarkers(srt23,ident.1 = 4,min.diff.pct = 0.05,verbose = F)
+```
+
+
+
+
+
+```{r}
+
+gs_test_res_neg= read.csv(text = "Gene Set Name	# Genes in Gene Set (K)	Description	# Genes in Overlap (k)	k/K	p-value	FDR q-value
+HALLMARK_TNFA_SIGNALING_VIA_NFKB	200	Genes regulated by NF-kB in response to TNF [GeneID=7124].	23	0.1150	1.41E-40	1.89E-36
+REACTOME_ATTENUATION_PHASE	28	Attenuation phase	9	0.3214	1.8E-20	1.21E-16
+GOBP_POSITIVE_REGULATION_OF_NUCLEOBASE_CONTAINING_COMPOUND_METABOLIC_PROCESS	1857	Any cellular process that activates or increases the frequency, rate or extent of the chemical reactions and pathways involving nucleobases, nucleosides, nucleotides and nucleic acids. [GOC:go_curators]	24	0.0129	1.5E-19	6.71E-16
+REACTOME_HSF1_DEPENDENT_TRANSACTIVATION	38	HSF1-dependent transactivation	9	0.2368	4.22E-19	1.42E-15
+GOBP_RESPONSE_TO_TEMPERATURE_STIMULUS	228	Any process that results in a change in state or activity of a cell or an organism (in terms of movement, secretion, enzyme production, gene expression, etc.) as a result of a temperature stimulus. [GOC:hb]	13	0.0570	9.41E-19	2.53E-15
+GOBP_RESPONSE_TO_ABIOTIC_STIMULUS	1216	Any process that results in a change in state or activity of a cell or an organism (in terms of movement, secretion, enzyme production, gene expression, etc.) as a result of an abiotic (not derived from living organisms) stimulus. [GOC:hb]	20	0.0164	4.11E-18	8.4E-15
+REACTOME_CELLULAR_RESPONSES_TO_EXTERNAL_STIMULI	706	Cellular responses to external stimuli	17	0.0241	4.38E-18	8.4E-15
+GOBP_POSITIVE_REGULATION_OF_BIOSYNTHETIC_PROCESS	1957	Any process that activates or increases the frequency, rate or extent of the chemical reactions and pathways resulting in the formation of substances. [GOC:go_curators]	23	0.0118	9.17E-18	1.54E-14
+REACTOME_HSF1_ACTIVATION	31	HSF1 activation	8	0.2581	2.02E-17	3.01E-14
+GOBP_POSITIVE_REGULATION_OF_TRANSCRIPTION_BY_RNA_POLYMERASE_II	1180	Any process that activates or increases the frequency, rate or extent of transcription from an RNA polymerase II promoter. [GOC:go_curators, GOC:txnOH]	19	0.0161	5.19E-17	6.97E-14
+",sep="\t")
+```
+
+
+```{r,fig.width=8,fig.height=3}
+gs_test_res_neg$Gene.Set.Name = factor(gs_test_res_neg$Gene.Set.Name,levels =gs_test_res_neg$Gene.Set.Name[order(gs_test_res_neg$FDR.q.value,decreasing = T)] )
+ggplot(data=gs_test_res_neg,aes(x=Gene.Set.Name,y=-log10(FDR.q.value),fill=-log10(FDR.q.value)))+
+  geom_bar(stat="identity")+
+  guides(fill="none")+
+  theme_classic()+coord_flip()
+ggsave(file.path(fig_dir,"pathway_in_cluster4_cll23.pdf"))
+```
+
+
+```{r}
+
+gs_test_res_neg= read.csv(text = "Gene Set Name	# Genes in Gene Set (K)	Description	# Genes in Overlap (k)	k/K	p-value	FDR q-value
+GOBP_REGULATION_OF_RNA_SPLICING	144	Any process that modulates the frequency, rate or extent of RNA splicing, the process of removing sections of the primary RNA transcript to remove sequences not present in the mature form of the RNA and joining the remaining sections to form the mature form of the RNA. [GOC:jl]	8	0.0556	7.28E-12	9.79E-8
+GOBP_RNA_SPLICING	478	The process of removing sections of the primary RNA transcript to remove sequences not present in the mature form of the RNA and joining the remaining sections to form the mature form of the RNA. [GOC:krc, GOC:mah]	10	0.0209	2.19E-10	1.47E-6
+GOBP_RNA_SPLICING_VIA_TRANSESTERIFICATION_REACTIONS	384	Splicing of RNA via a series of two transesterification reactions. [GOC:krc]	9	0.0234	7.11E-10	3.18E-6
+WP_MRNA_PROCESSING	133	mRNA Processing	6	0.0451	1.26E-8	3.44E-5
+GOBP_MRNA_PROCESSING	543	Any process involved in the conversion of a primary mRNA transcript into one or more mature mRNA(s) prior to translation into polypeptide. [GOC:mah]	9	0.0166	1.44E-8	3.44E-5
+REACTOME_PROCESSING_OF_CAPPED_INTRON_CONTAINING_PRE_MRNA	242	Processing of Capped Intron-Containing Pre-mRNA	7	0.0289	1.54E-8	3.44E-5
+GOMF_RNA_BINDING	1938	Interacting selectively and non-covalently with an RNA molecule or a portion thereof. [GOC:jl, GOC:mah]	14	0.0072	3.47E-8	6.65E-5
+GOBP_MRNA_METABOLIC_PROCESS	879	The chemical reactions and pathways involving mRNA, messenger RNA, which is responsible for carrying the coded genetic 'message', transcribed from DNA, to sites of protein assembly at the ribosomes. [ISBN:0198506732]	10	0.0114	7.14E-8	1.2E-4
+REACTOME_MRNA_SPLICING	188	mRNA Splicing	6	0.0319	9.9E-8	1.48E-4
+GOBP_REGULATION_OF_MRNA_SPLICING_VIA_SPLICEOSOME	100	Any process that modulates the frequency, rate or extent of mRNA splicing via a spliceosomal mechanism. [GOC:jid]	5	0.0500	1.34E-7	1.79E-4
+",sep="\t")
+```
+
+
+```{r,fig.width=8,fig.height=3}
+gs_test_res_neg$Gene.Set.Name = factor(gs_test_res_neg$Gene.Set.Name,levels =gs_test_res_neg$Gene.Set.Name[order(gs_test_res_neg$FDR.q.value,decreasing = T)] )
+ggplot(data=gs_test_res_neg,aes(x=Gene.Set.Name,y=-log10(FDR.q.value),fill=-log10(FDR.q.value)))+
+  geom_bar(stat="identity")+
+  guides(fill="none")+
+  theme_classic()+coord_flip()
+ggsave(file.path(fig_dir,"pathway_in_cluster3560_cll23.pdf"))
+```
+
+
+```{r}
+srt23.marker = FindAllMarkers(srt23,min.diff.pct = 0.05,only.pos = T,verbose = F,max.cells.per.ident = 1000)
+```
+
+```{r,fig.width=5,fig.height=9}
+top10 <- srt23.marker[srt23.marker$p_val_adj<0.01,] %>% group_by(cluster) %>% top_n(n = 30, wt = -p_val_adj) # %>%  top_n(n = 5, wt = avg_logFC)
+top10 = top10 %>% group_by(gene) %>% top_n(n=1,wt=avg_log2FC)
+top10 = top10 %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC)
+
+DotPlot(srt23,features = unique(top10$gene),cluster.idents=F,cols=c(brewer.pal(7,"YlGnBu")[1],brewer.pal(7,"YlGnBu")[7]) )+coord_flip()+labs(x=NULL,y=NULL)
+```
+
+```{r}
+screen_color = "#4472C4"
+relapsed_color = "#803D38"
+
+relapsed_ibrtu_color = "#B99419"
+condition_color = c(screen_color, relapsed_color, relapsed_ibrtu_color)
+```
+
+
+```{r}
+srt23$condition = factor(srt23$condition,levels = c("Screening","Relapsed","Relapsed_ibrutinib"))
+pp = lapply(VlnPlot(srt23,c("MCL1","BCL2A1","BCL2L1","BCL2","NFKB_genes1"),cols = condition_color,group.by = "condition",pt.size=0,combine=F),function(x){x+theme(axis.title.x = element_blank(),axis.title.y = element_blank(),legend.position = "none")})
+ggarrange(plotlist =  pp,ncol=5,nrow=1)
+ggsave(file.path(fig_dir,"vlnplot_mcl1_cll23.pdf"),width = 8,height = 3)
+```
+
+
+```{r}
+VlnPlot(srt23,c("NFKB_genes1"),pt.size=0,cols = co)+theme(axis.title.x = element_blank(),axis.title.y = element_blank(),legend.position = "none")
+ggsave(file.path(fig_dir,"vlnplot_NFKB_per_cluster_cll23.pdf"),width = 4.5,height = 2.5)
+```
+
+
+## CLL5
+
+
+```{r}
+srt5 = srt[,srt$patient_id %in% c( "CLL5" )]
+srt5 <- RunFastMNN(object.list = SplitObject(srt5,split.by = "sample_id"),
+                    verbose = F )
+srt5 <- RunUMAP(srt5, reduction = "mnn", dims = 1:30)
+srt5 <- FindNeighbors(srt5, reduction = "mnn", dims = 1:30)
+srt5 <- FindClusters(srt5,resolution = 0.6)
+DimPlot(srt5,label=T,split.by = "condition")
+```
+
+
+```{r}
+M5890 <- read.table("/stornext/General/data/user_managed/grpu_mritchie_1/LuyiTian/Rachel_CLL_analysis/figs/CLL_plot/csvs/M5890.txt", quote="\"", skip=2)
+
+srt5 <- AddModuleScore(
+  object = srt5,
+  features = list(M5890$V1),
+  ctrl = 50,
+  name = 'NFKB_genes'
+)
+```
+
+
+```{r}
+pdf(file.path(fig_dir,"barplot_bycond_cll5.pdf"),width = 4.5,height = 4)
+
+tmp = as.matrix(table(srt5$seurat_clusters,srt5$condition))
+tmp = tmp[,c("Relapsed","Relapsed_ibrutinib")]
+co = colorRampPalette( ggsci::pal_npg()(10))(nrow(tmp))
+tmp = t(t(tmp)/colSums(tmp))
+tmp = tmp[order((tmp[,c(2)]/(tmp[,c(1)]))),]
+names(co) = rownames(tmp)
+connectedBarplot(tmp,color=co )
+dev.off()
+```
+
+
+```{r,fig.width=4,fig.height=3.5}
+DimPlot(srt5,label=T,cols = co)+theme_void()
+ggsave(file.path(fig_dir,"umap_CLL5.pdf"))
+```
+
+
+
+```{r}
+srt5.marker = FindAllMarkers(srt5,min.diff.pct = 0.05,only.pos = T,verbose = F,max.cells.per.ident = 1000)
+```
+
+```{r,fig.width=5,fig.height=9}
+top10 <- srt5.marker[srt5.marker$p_val_adj<0.01,] %>% group_by(cluster) %>% top_n(n = 30, wt = -p_val_adj) # %>%  top_n(n = 5, wt = avg_logFC)
+top10 = top10 %>% group_by(gene) %>% top_n(n=1,wt=avg_log2FC)
+top10 = top10 %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC)
+
+DotPlot(srt5,features = unique(top10$gene),cluster.idents=F,cols=c(brewer.pal(7,"YlGnBu")[1],brewer.pal(7,"YlGnBu")[7]) )+coord_flip()+labs(x=NULL,y=NULL)
+```
+
+```{r}
+srt5$condition = factor(srt5$condition,levels = c("Screening","Relapsed","Relapsed_ibrutinib"))
+pp = lapply(VlnPlot(srt5,c("MCL1","BCL2A1","BCL2L1","BCL2","NFKB_genes1"),cols = condition_color[2:3],group.by = "condition",pt.size=0.0,combine=F),function(x){x+theme(axis.title.x = element_blank(),axis.title.y = element_blank(),legend.position = "none")})
+pp[[2]] = VlnPlot(srt5,c("BCL2A1"),cols = condition_color[2:3],group.by = "condition",pt.size=0.01)+theme(axis.title.x = element_blank(),axis.title.y = element_blank(),legend.position = "none")
+pp[[3]] = VlnPlot(srt5,c("BCL2L1"),cols = condition_color[2:3],group.by = "condition",pt.size=0.01)+theme(axis.title.x = element_blank(),axis.title.y = element_blank(),legend.position = "none")
+ggarrange(plotlist =  pp,ncol=5,nrow=1)
+ggsave(file.path(fig_dir,"vlnplot_mcl1_cll5.pdf"),width = 8,height = 3)
+```
+
+```{r}
+VlnPlot(srt5,c("NFKB_genes1"),pt.size=0,cols = co)+theme(axis.title.x = element_blank(),axis.title.y = element_blank(),legend.position = "none")
+ggsave(file.path(fig_dir,"vlnplot_NFKB_per_cluster_cll5.pdf"),width = 4.5,height = 2.5)
+```
+
+## CLL2
+
+
+
+```{r}
+srt2 = srt[,srt$patient_id %in% c( "CLL2" )]
+srt2 <- RunFastMNN(object.list = SplitObject(srt2,split.by = "sample_id"),
+                    verbose = F )
+srt2 <- RunUMAP(srt2, reduction = "mnn", dims = 1:30)
+srt2 <- FindNeighbors(srt2, reduction = "mnn", dims = 1:30)
+srt2 <- FindClusters(srt2,resolution = 0.6)
+DimPlot(srt2,label=T,split.by = "condition")
+```
+
+```{r}
+M5890 <- read.table("/stornext/General/data/user_managed/grpu_mritchie_1/LuyiTian/Rachel_CLL_analysis/figs/CLL_plot/csvs/M5890.txt", quote="\"", skip=2)
+
+srt2 <- AddModuleScore(
+  object = srt2,
+  features = list(M5890$V1),
+  ctrl = 50,
+  name = 'NFKB_genes'
+)
+```
+
+
+```{r}
+pdf(file.path(fig_dir,"barplot_bycond_cll2.pdf"),width = 4.5,height = 4)
+
+tmp = as.matrix(table(srt2$seurat_clusters,srt2$condition))
+tmp = tmp[,c("Relapsed","Relapsed_ibrutinib")]
+co = colorRampPalette( ggsci::pal_npg()(10))(nrow(tmp))
+tmp = t(t(tmp)/colSums(tmp))
+tmp = tmp[order((tmp[,c(2)]/(tmp[,c(1)]))),]
+names(co) = rownames(tmp)
+connectedBarplot(tmp,color=co )
+dev.off()
+```
+
+
+```{r,fig.width=4,fig.height=3.5}
+DimPlot(srt2,label=T,cols = co)+theme_void()
+ggsave(file.path(fig_dir,"umap_CLL2.pdf"))
+```
+
+
+
+```{r}
+srt2.marker = FindAllMarkers(srt2,min.diff.pct = 0.05,only.pos = T,verbose = F,max.cells.per.ident = 1000)
+```
+
+```{r,fig.width=5,fig.height=9}
+top10 <- srt2.marker[srt2.marker$p_val_adj<0.01,] %>% group_by(cluster) %>% top_n(n = 30, wt = -p_val_adj) # %>%  top_n(n = 5, wt = avg_logFC)
+top10 = top10 %>% group_by(gene) %>% top_n(n=1,wt=avg_log2FC)
+top10 = top10 %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC)
+
+DotPlot(srt2,features = unique(top10$gene),cluster.idents=F,cols=c(brewer.pal(7,"YlGnBu")[1],brewer.pal(7,"YlGnBu")[7]) )+coord_flip()+labs(x=NULL,y=NULL)
+```
+
+```{r}
+srt2$condition = factor(srt2$condition,levels = c("Screening","Relapsed","Relapsed_ibrutinib"))
+pp = lapply(VlnPlot(srt2,c("MCL1","BCL2A1","BCL2L1","BCL2","NFKB_genes1"),cols = condition_color[2:3],group.by = "condition",pt.size=0.0,combine=F),function(x){x+theme(axis.title.x = element_blank(),axis.title.y = element_blank(),legend.position = "none")})
+pp[[2]] = VlnPlot(srt2,c("BCL2A1"),cols = condition_color[2:3],group.by = "condition",pt.size=0.01)+theme(axis.title.x = element_blank(),axis.title.y = element_blank(),legend.position = "none")
+ggarrange(plotlist =  pp,ncol=5,nrow=1)
+ggsave(file.path(fig_dir,"vlnplot_mcl1_cll2.pdf"),width = 8,height = 3)
+```
+
+
+```{r}
+VlnPlot(srt2,c("NFKB_genes1"),pt.size=0,cols = co)+theme(axis.title.x = element_blank(),axis.title.y = element_blank(),legend.position = "none")
+ggsave(file.path(fig_dir,"vlnplot_NFKB_per_cluster_cll2.pdf"),width = 4.5,height = 2.5)
+```
+
+
+
+
+```{r}
+
+```
+
